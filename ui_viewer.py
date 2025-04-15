@@ -47,6 +47,7 @@ SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Constant for the special shee
 TEMPLATE_DIR = './config_templates/' # Define template dir constant here too
 
 # --- Logging Setup ---
+# (Same as previous version)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s',
@@ -74,7 +75,7 @@ if update_bp:
     app.register_blueprint(update_bp)
 
 
-# --- HTML Template (FIXED pagination check) ---
+# --- HTML Template (FIXED table layout and ID wrapping) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -91,15 +92,7 @@ HTML_TEMPLATE = """
         th a { display: inline-flex; align-items: center; gap: 0.25rem; }
         th a:hover { text-decoration: underline; }
         .sort-icon { width: 1em; height: 1em; stroke-width: 2; }
-        .table-fixed-layout { table-layout: fixed; width: 100%; }
-        /* Action Bar Styles */
-        #actionBar {
-            transition: transform 0.3s ease-in-out;
-            transform: translateY(100%); /* Start hidden below */
-        }
-        #actionBar.visible {
-            transform: translateY(0); /* Slide in */
-        }
+        /* Removed table-fixed-layout class from table below */
     </style>
 </head>
 <body class="bg-gray-100 font-sans pb-20"> {# Added padding-bottom #}
@@ -109,7 +102,7 @@ HTML_TEMPLATE = """
 
         {# Navigation Tabs #}
         <div class="mb-6 border-b border-gray-300">
-            <nav class="-mb-px flex space-x-6" aria-label="Tabs">
+            <nav class="-mb-px flex space-x-6 overflow-x-auto" aria-label="Tabs"> {# Added overflow-x-auto #}
                 {# Links to Comparison Views #}
                 {% for sheet in available_sheets %}
                     <a href="{{ url_for('view_comparison', comparison_type=sheet, sort_by=sort_by, order=sort_order, size=page_size_str) }}"
@@ -125,7 +118,7 @@ HTML_TEMPLATE = """
                    Config Templates
                 </a>
                  <a href="{{ url_for('refresh_data') }}" title="Reload data from Excel file"
-                    class="ml-auto py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600">
+                    class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600"> {# Added flex-shrink-0 #}
                     <i data-lucide="refresh-cw" class="inline-block w-4 h-4"></i> Reload Data
                  </a>
             </nav>
@@ -155,37 +148,38 @@ HTML_TEMPLATE = """
                     <span id="selectionCount" class="text-sm font-normal text-gray-600 mr-4" style="display: none;">0 rows selected</span>
                 </h2>
                 <div class="overflow-x-auto p-3">
-                    <table id="dataTable" class="min-w-full divide-y divide-gray-200 table-fixed-layout">
+                    {# --- MODIFICATION: Removed table-fixed-layout --- #}
+                    <table id="dataTable" class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                              {# --- Conditional Headers --- #}
                             {% if current_comparison_type == skill_expr_sheet_name %}
                                 {# 5 Columns + Checkbox for Skill Exprs #}
                                 <tr>
-                                    <th scope="col" class="w-10 px-4 py-3 text-center">
+                                    <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
                                         <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
                                                class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                                     </th>
-                                    <th scope="col" class="w-1/4 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Key #}
                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Concatenated Key', order='desc' if sort_by == 'Concatenated Key' and sort_order == 'asc' else 'asc') }}">
                                             Concatenated Key {% if sort_by == 'Concatenated Key' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="w-1/4 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Expression #}
                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Expression', order='desc' if sort_by == 'Expression' and sort_order == 'asc' else 'asc') }}">
                                             Expression {% if sort_by == 'Expression' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="w-1/4 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Ideal Expression #}
                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Ideal Expression', order='desc' if sort_by == 'Ideal Expression' and sort_order == 'asc' else 'asc') }}">
                                             Ideal Expression {% if sort_by == 'Ideal Expression' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="w-auto px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID - Added whitespace-nowrap #}
                                          <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='ID', order='desc' if sort_by == 'ID' and sort_order == 'asc' else 'asc') }}">
                                             ID {% if sort_by == 'ID' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="w-1/5 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Status #}
                                          <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Status', order='desc' if sort_by == 'Status' and sort_order == 'asc' else 'asc') }}">
                                             Status {% if sort_by == 'Status' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
@@ -194,22 +188,22 @@ HTML_TEMPLATE = """
                             {% else %}
                                 {# 3 Columns + Checkbox for Others #}
                                 <tr>
-                                     <th scope="col" class="w-10 px-4 py-3 text-center">
+                                     <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
                                         <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
                                                class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                                     </th>
-                                    <th scope="col" class="w-3/5 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Item #}
                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Item', order='desc' if sort_by == 'Item' and sort_order == 'asc' else 'asc') }}">
                                             {{ page_data[0].get('Header', 'Item') if page_data else 'Item' }}
                                             {% if sort_by == 'Item' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="w-1/5 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID - Added whitespace-nowrap #}
                                          <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='ID', order='desc' if sort_by == 'ID' and sort_order == 'asc' else 'asc') }}">
                                             ID (from API) {% if sort_by == 'ID' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="w-1/5 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Status #}
                                          <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Status', order='desc' if sort_by == 'Status' and sort_order == 'asc' else 'asc') }}">
                                             Status {% if sort_by == 'Status' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
@@ -231,14 +225,16 @@ HTML_TEMPLATE = """
                                         <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Concatenated Key', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Expression', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Ideal Expression', '') | default('', True) }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('ID', '') | default('', True) }}</td>
+                                        {# --- MODIFICATION: Added whitespace-nowrap to ID cell --- #}
+                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}">
                                             {{ row.get('Status', '') | default('', True) }}
                                         </td>
                                     {% else %}
                                          {# 3 Columns for Others #}
                                         <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Item', '') | default('', True) }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('ID', '') | default('', True) }}</td>
+                                        {# --- MODIFICATION: Added whitespace-nowrap to ID cell --- #}
+                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}">
                                             {{ row.get('Status', '') | default('', True) }}
                                         </td>
@@ -476,7 +472,7 @@ HTML_TEMPLATE = """
 
             } catch (error) {
                 console.error('Error applying configuration:', error);
-                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                 generalMessageArea.innerHTML = `<div class="bg-red-100 border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
                     <strong class="font-bold">Error:</strong> Failed to apply configuration. ${error.message}. Check server logs.
                  </div>`;
             } finally {
