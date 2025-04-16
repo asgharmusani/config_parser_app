@@ -23,7 +23,7 @@ logger = logging.getLogger()
 # --- Blueprint Definition ---
 template_bp = Blueprint('templates', __name__, template_folder=None) # No separate template folder
 
-# --- HTML Template for Template Manager ---
+# --- HTML Template for Template Manager (Added fetchReferenceApi JS function) ---
 TEMPLATE_MANAGER_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -87,6 +87,7 @@ TEMPLATE_MANAGER_HTML = """
                     <div class="flex items-center space-x-2 mb-2">
                         <input type="text" id="refApiUrl" placeholder="Enter API URL (e.g., Agent Group URL)"
                                class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                        {# --- Button calling the function --- #}
                         <button onclick="fetchReferenceApi()" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm">Fetch Example</button>
                     </div>
                     <div id="refApiResult" class="json-display text-xs" style="display: none;"></div>
@@ -131,19 +132,18 @@ TEMPLATE_MANAGER_HTML = """
       function showMessage(text, isError = false) {
           messageAreaEl.textContent = text;
           messageAreaEl.className = `mb-4 p-3 rounded-md text-sm ${isError ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-green-100 text-green-700 border border-green-300'}`;
-          // Auto-hide message after 5 seconds
           setTimeout(() => { messageAreaEl.textContent = ''; messageAreaEl.className = 'mb-4'; }, 5000);
       }
 
       // --- Template Loading ---
       async function loadTemplateList() {
-          templateListEl.innerHTML = '<li class="text-gray-500 italic">Loading...</li>'; // Show loading state
+          templateListEl.innerHTML = '<li class="text-gray-500 italic">Loading...</li>';
           try {
               const response = await fetch('{{ url_for("templates.list_templates") }}');
               if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
               const templates = await response.json();
 
-              templateListEl.innerHTML = ''; // Clear loading/previous list
+              templateListEl.innerHTML = '';
               if (templates.length === 0) {
                   templateListEl.innerHTML = '<li class="text-gray-500 italic">No templates found.</li>';
               } else {
@@ -176,7 +176,7 @@ TEMPLATE_MANAGER_HTML = """
                       li.appendChild(actionsDiv);
                       templateListEl.appendChild(li);
                   });
-                  lucide.createIcons(); // Re-render icons
+                  lucide.createIcons();
               }
           } catch (error) {
               console.error('Error loading template list:', error);
@@ -186,21 +186,21 @@ TEMPLATE_MANAGER_HTML = """
       }
 
       async function loadTemplateContent(filename) {
-          currentEditingTemplate = filename; // Set the file being edited
+          currentEditingTemplate = filename;
           const baseName = filename.replace('.json', '');
-          templateNameEl.value = baseName; // Populate name field
+          templateNameEl.value = baseName;
           templateContentEl.value = 'Loading...';
-           messageAreaEl.textContent = ''; // Clear messages
+           messageAreaEl.textContent = '';
           try {
               const response = await fetch(`{{ url_for("templates.get_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", filename));
               if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
               const content = await response.json();
-              templateContentEl.value = JSON.stringify(content, null, 2); // Pretty print JSON
+              templateContentEl.value = JSON.stringify(content, null, 2); // Pretty print
           } catch (error) {
               console.error(`Error loading template ${filename}:`, error);
               templateContentEl.value = `Error loading template: ${error.message}`;
               showMessage(`Failed to load template '${baseName}'.`, true);
-              currentEditingTemplate = null; // Reset editing state on error
+              currentEditingTemplate = null;
           }
       }
 
@@ -208,28 +208,14 @@ TEMPLATE_MANAGER_HTML = """
       async function saveTemplate() {
           const name = templateNameEl.value.trim();
           const content = templateContentEl.value.trim();
-           messageAreaEl.textContent = ''; // Clear messages
+           messageAreaEl.textContent = '';
 
-          if (!name) {
-              showMessage('Template name cannot be empty.', true);
-              templateNameEl.focus();
-              return;
-          }
-           // Basic validation: ensure name doesn't contain invalid chars like / or \
-          if (/[\\/]/.test(name)) {
-             showMessage('Template name contains invalid characters (\\ or /).', true);
-             templateNameEl.focus();
-             return;
-          }
+          if (!name) { showMessage('Template name cannot be empty.', true); templateNameEl.focus(); return; }
+          if (/[\\/]/.test(name)) { showMessage('Template name contains invalid characters (\\ or /).', true); templateNameEl.focus(); return; }
 
           let jsonData;
-          try {
-              jsonData = JSON.parse(content); // Validate JSON before sending
-          } catch (error) {
-              showMessage(`Invalid JSON format: ${error.message}`, true);
-              templateContentEl.focus();
-              return;
-          }
+          try { jsonData = JSON.parse(content); }
+          catch (error) { showMessage(`Invalid JSON format: ${error.message}`, true); templateContentEl.focus(); return; }
 
           const filename = name + '.json';
 
@@ -237,59 +223,35 @@ TEMPLATE_MANAGER_HTML = """
               const response = await fetch('{{ url_for("templates.save_template") }}', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ filename: filename, content: jsonData }) // Send parsed JSON
+                  body: JSON.stringify({ filename: filename, content: jsonData })
               });
               const result = await response.json();
-
-              if (response.ok) {
-                  showMessage(result.message || 'Template saved successfully.');
-                  loadTemplateList(); // Refresh list
-                  // Decide if we want to keep editing or clear form
-                  // loadTemplateContent(filename); // Option: reload saved content
-                  // Or clear:
-                  // templateNameEl.value = ''; templateContentEl.value = ''; currentEditingTemplate = null;
-              } else {
-                  throw new Error(result.error || `HTTP error! status: ${response.status}`);
-              }
-          } catch (error) {
-              console.error('Error saving template:', error);
-              showMessage(`Error saving template: ${error.message}`, true);
-          }
+              if (response.ok) { showMessage(result.message || 'Template saved successfully.'); loadTemplateList(); }
+              else { throw new Error(result.error || `HTTP error! status: ${response.status}`); }
+          } catch (error) { console.error('Error saving template:', error); showMessage(`Error saving template: ${error.message}`, true); }
       }
 
       // --- Template Deletion ---
       async function deleteTemplate(filename) {
           const baseName = filename.replace('.json', '');
-          if (!confirm(`Are you sure you want to delete the template "${baseName}"?`)) {
-              return;
-          }
-           messageAreaEl.textContent = ''; // Clear messages
+          if (!confirm(`Are you sure you want to delete the template "${baseName}"?`)) return;
+           messageAreaEl.textContent = '';
 
           try {
               const response = await fetch(`{{ url_for("templates.delete_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", filename), {
-                  method: 'DELETE' // Or POST if DELETE method causes issues
+                  method: 'DELETE'
               });
               const result = await response.json();
-
               if (response.ok) {
                   showMessage(result.message || 'Template deleted successfully.');
-                  loadTemplateList(); // Refresh list
-                  // Clear editor if the deleted template was being edited
-                  if (currentEditingTemplate === filename) {
-                      templateNameEl.value = '';
-                      templateContentEl.value = '';
-                      currentEditingTemplate = null;
-                  }
-              } else {
-                  throw new Error(result.error || `HTTP error! status: ${response.status}`);
-              }
-          } catch (error) {
-              console.error(`Error deleting template ${filename}:`, error);
-              showMessage(`Error deleting template '${baseName}': ${error.message}`, true);
-          }
+                  loadTemplateList();
+                  if (currentEditingTemplate === filename) { templateNameEl.value = ''; templateContentEl.value = ''; currentEditingTemplate = null; }
+              } else { throw new Error(result.error || `HTTP error! status: ${response.status}`); }
+          } catch (error) { console.error(`Error deleting template ${filename}:`, error); showMessage(`Error deleting template '${baseName}': ${error.message}`, true); }
       }
 
       // --- Reference API Fetcher ---
+      // --- MODIFICATION START: Added the missing function ---
        async function fetchReferenceApi() {
             const url = refApiUrlEl.value.trim();
             refApiResultEl.style.display = 'none';
@@ -305,15 +267,15 @@ TEMPLATE_MANAGER_HTML = """
             refApiResultEl.style.display = 'block';
 
             try {
-                // Use a server-side proxy endpoint to avoid CORS issues
+                // Use the server-side proxy endpoint
                 const response = await fetch('{{ url_for("templates.proxy_api_fetch") }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url: url })
                 });
-                const result = await response.json();
+                const result = await response.json(); // Expecting {data: ...} or {error: ...}
 
-                if (response.ok) {
+                if (response.ok && result.data) {
                     refApiResultEl.textContent = JSON.stringify(result.data, null, 2); // Pretty print result
                 } else {
                      throw new Error(result.error || `HTTP error! status: ${response.status}`);
@@ -323,8 +285,10 @@ TEMPLATE_MANAGER_HTML = """
                  refApiResultEl.textContent = '';
                  refApiResultEl.style.display = 'none';
                  refApiErrorEl.textContent = `Error fetching API: ${error.message}`;
+                 showMessage(`Failed to fetch reference API: ${error.message}`, true); // Also show in main message area
             }
        }
+       // --- MODIFICATION END ---
 
 
       // --- Initial Load ---
@@ -340,8 +304,6 @@ TEMPLATE_MANAGER_HTML = """
 @template_bp.route('/templates')
 def template_manager_page():
     """Renders the main template management page."""
-    # This route just serves the static HTML structure defined above.
-    # The actual data loading (list, content) is done via JS fetches.
     return render_template_string(TEMPLATE_MANAGER_HTML)
 
 @template_bp.route('/templates/list', methods=['GET'])
@@ -349,11 +311,8 @@ def list_templates():
     """Returns a list of .json template filenames."""
     try:
         if not os.path.exists(TEMPLATE_DIR):
-            os.makedirs(TEMPLATE_DIR) # Create directory if it doesn't exist
-            logger.info(f"Created template directory: {TEMPLATE_DIR}")
-            return jsonify([])
-
-        files = [f for f in os.listdir(TEMPLATE_DIR) if f.lower().endswith('.json')]
+            os.makedirs(TEMPLATE_DIR); logger.info(f"Created template directory: {TEMPLATE_DIR}"); return jsonify([])
+        files = [f for f in os.listdir(TEMPLATE_DIR) if f.lower().endswith('.json') and os.path.isfile(os.path.join(TEMPLATE_DIR, f))]
         logger.debug(f"Found template files: {files}")
         return jsonify(sorted(files))
     except Exception as e:
@@ -363,115 +322,58 @@ def list_templates():
 @template_bp.route('/templates/get/<path:filename>', methods=['GET'])
 def get_template(filename):
     """Returns the JSON content of a specific template file."""
-    if '..' in filename or filename.startswith('/'): # Basic security check
-        logger.warning(f"Attempted access to invalid path: {filename}")
-        abort(400, description="Invalid filename.")
+    if '..' in filename or filename.startswith('/'): logger.warning(f"Attempted access to invalid path: {filename}"); abort(400, description="Invalid filename.")
     try:
         filepath = os.path.join(TEMPLATE_DIR, filename)
-        if not os.path.exists(filepath) or not os.path.isfile(filepath):
-             logger.warning(f"Template file not found: {filepath}")
-             abort(404, description="Template not found.")
-
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = json.load(f)
+        if not os.path.exists(filepath) or not os.path.isfile(filepath): logger.warning(f"Template file not found: {filepath}"); abort(404, description="Template not found.")
+        with open(filepath, 'r', encoding='utf-8') as f: content = json.load(f)
         logger.debug(f"Read template content from: {filepath}")
         return jsonify(content)
-    except json.JSONDecodeError:
-        logger.error(f"Invalid JSON in template file: {filepath}")
-        return jsonify({"error": "Template file contains invalid JSON."}), 500
-    except Exception as e:
-        logger.error(f"Error reading template file {filename}: {e}", exc_info=True)
-        return jsonify({"error": "Failed to read template file."}), 500
+    except json.JSONDecodeError: logger.error(f"Invalid JSON in template file: {filepath}"); return jsonify({"error": "Template file contains invalid JSON."}), 500
+    except Exception as e: logger.error(f"Error reading template file {filename}: {e}", exc_info=True); return jsonify({"error": "Failed to read template file."}), 500
 
 @template_bp.route('/templates/save', methods=['POST'])
 def save_template():
     """Saves JSON content to a template file."""
     try:
-        data = request.get_json()
-        if not data or 'filename' not in data or 'content' not in data:
-            abort(400, description="Missing filename or content in request.")
-
-        filename = data['filename']
-        content = data['content'] # Expecting already parsed JSON object/dict
-
-        # Basic validation/sanitization
-        if not filename.lower().endswith('.json'):
-             abort(400, description="Filename must end with .json")
-        if '..' in filename or filename.startswith('/') or os.path.dirname(filename):
-             abort(400, description="Invalid characters or path in filename.")
-
-        if not os.path.exists(TEMPLATE_DIR):
-            os.makedirs(TEMPLATE_DIR)
-
-        filepath = os.path.join(TEMPLATE_DIR, filename)
-        base_name = filename.replace('.json', '')
-
-        # Check if overwriting or creating new
-        is_update = os.path.exists(filepath)
-        action = "Updated" if is_update else "Created"
-
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(content, f, indent=2) # Save pretty-printed JSON
-
+        data = request.get_json();
+        if not data or 'filename' not in data or 'content' not in data: abort(400, description="Missing filename or content.")
+        filename = data['filename']; content = data['content']
+        if not filename.lower().endswith('.json'): abort(400, description="Filename must end with .json")
+        if '..' in filename or filename.startswith('/') or os.path.dirname(filename): abort(400, description="Invalid characters or path in filename.")
+        if not os.path.exists(TEMPLATE_DIR): os.makedirs(TEMPLATE_DIR)
+        filepath = os.path.join(TEMPLATE_DIR, filename); base_name = filename.replace('.json', '')
+        is_update = os.path.exists(filepath); action = "Updated" if is_update else "Created"
+        with open(filepath, 'w', encoding='utf-8') as f: json.dump(content, f, indent=2)
         logger.info(f"{action} template file: {filepath}")
         return jsonify({"message": f"Template '{base_name}' saved successfully."}), 200 if is_update else 201
+    except Exception as e: logger.error(f"Error saving template file: {e}", exc_info=True); return jsonify({"error": "Failed to save template file."}), 500
 
-    except Exception as e:
-        logger.error(f"Error saving template file: {e}", exc_info=True)
-        return jsonify({"error": "Failed to save template file."}), 500
-
-@template_bp.route('/templates/delete/<path:filename>', methods=['DELETE', 'POST']) # Allow POST for simplicity if DELETE causes issues
+@template_bp.route('/templates/delete/<path:filename>', methods=['DELETE', 'POST']) # Allow POST for simplicity
 def delete_template(filename):
     """Deletes a specific template file."""
-    if '..' in filename or filename.startswith('/'):
-        logger.warning(f"Attempted delete with invalid path: {filename}")
-        abort(400, description="Invalid filename.")
+    if '..' in filename or filename.startswith('/'): logger.warning(f"Attempted delete with invalid path: {filename}"); abort(400, description="Invalid filename.")
     try:
-        filepath = os.path.join(TEMPLATE_DIR, filename)
-        base_name = filename.replace('.json', '')
-
+        filepath = os.path.join(TEMPLATE_DIR, filename); base_name = filename.replace('.json', '')
         if os.path.exists(filepath) and os.path.isfile(filepath):
-            os.remove(filepath)
-            logger.info(f"Deleted template file: {filepath}")
+            os.remove(filepath); logger.info(f"Deleted template file: {filepath}")
             return jsonify({"message": f"Template '{base_name}' deleted successfully."}), 200
-        else:
-            logger.warning(f"Attempted to delete non-existent template: {filepath}")
-            abort(404, description="Template not found.")
-
-    except Exception as e:
-        logger.error(f"Error deleting template file {filename}: {e}", exc_info=True)
-        return jsonify({"error": "Failed to delete template file."}), 500
+        else: logger.warning(f"Attempted to delete non-existent template: {filepath}"); abort(404, description="Template not found.")
+    except Exception as e: logger.error(f"Error deleting template file {filename}: {e}", exc_info=True); return jsonify({"error": "Failed to delete template file."}), 500
 
 
 @template_bp.route('/templates/proxy_api_fetch', methods=['POST'])
 def proxy_api_fetch():
     """Server-side proxy to fetch data from a given URL to avoid CORS."""
     try:
-        data = request.get_json()
-        url = data.get('url')
-        if not url:
-            return jsonify({"error": "URL is required."}), 400
-
+        data = request.get_json(); url = data.get('url')
+        if not url: return jsonify({"error": "URL is required."}), 400
         logger.info(f"Proxy fetching reference API: {url}")
-        # Add basic validation for URL if needed
-        response = requests.get(url, timeout=10) # Add timeout
-        response.raise_for_status() # Raise error for bad status codes
-
-        # Attempt to parse JSON, but return text if it fails
-        try:
-            api_data = response.json()
-        except requests.exceptions.JSONDecodeError:
-            api_data = response.text
-
+        response = requests.get(url, timeout=10); response.raise_for_status()
+        try: api_data = response.json()
+        except requests.exceptions.JSONDecodeError: api_data = response.text
         return jsonify({"data": api_data}), 200
-
-    except requests.exceptions.Timeout:
-        logger.warning(f"Proxy fetch timed out for URL: {url}")
-        return jsonify({"error": "Request timed out."}), 504 # Gateway Timeout
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Proxy fetch failed for URL {url}: {e}")
-        return jsonify({"error": f"Failed to fetch API: {e}"}), 502 # Bad Gateway
-    except Exception as e:
-        logger.error(f"Unexpected error during proxy fetch: {e}", exc_info=True)
-        return jsonify({"error": "An internal error occurred."}), 500
+    except requests.exceptions.Timeout: logger.warning(f"Proxy fetch timed out for URL: {url}"); return jsonify({"error": "Request timed out."}), 504
+    except requests.exceptions.RequestException as e: logger.error(f"Proxy fetch failed for URL {url}: {e}"); return jsonify({"error": f"Failed to fetch API: {e}"}), 502
+    except Exception as e: logger.error(f"Unexpected error during proxy fetch: {e}", exc_info=True); return jsonify({"error": "An internal error occurred."}), 500
 
