@@ -7,181 +7,234 @@ and simulating the preparation for a database update.
 import os
 import json
 import logging
-import re
-from flask import Blueprint, request, jsonify, current_app
+import re # For placeholder replacement
+from flask import Blueprint, request, jsonify, current_app, abort # Import current_app to access shared config
 
 # --- Constants ---
-TEMPLATE_DIR = './config_templates/'
-LOG_FILE_UI = 'ui_viewer.log' # Assuming shared log file
+TEMPLATE_DIR = './config_templates/' # Directory where JSON templates are stored
+LOG_FILE_UI = 'ui_viewer.log'        # Assuming shared log file with main app
+# Define the keys used to identify rows in different comparison sheets
+# This helps retrieve the correct data from the cache
+IDENTIFIER_KEYS = {
+    "Skill_exprs Comparison": "Concatenated Key",
+    "Vqs Comparison": "Item",
+    "Skills Comparison": "Item",
+    "Vags Comparison": "Item",
+}
+
 
 # --- Logging ---
+# Use the root logger configured in the main app (ui_viewer.py)
 logger = logging.getLogger()
 
 # --- Blueprint Definition ---
+# Create a Blueprint named 'updates'. The main app (ui_viewer.py) will register this.
 update_bp = Blueprint('updates', __name__)
 
-# --- Placeholder/Helper ---
-def replace_placeholders(template_dict: dict, row_data: dict) -> dict:
-    """Recursively replaces {row.ColumnName} placeholders in a template dict."""
-    output_dict = {}
-    placeholder_pattern = re.compile(r'{row\.([^}]+)}') # Matches {row.ColumnName}
+# --- Helper Function: Placeholder Replacement ---
+def replace_placeholders(template_data: any, row_data: dict) -> any:
+    """
+    Recursively traverses a template structure (dict, list, or string)
+    and replaces placeholders like {row.ColumnName} with values from row_data.
 
-    for key, value in template_dict.items():
-        if isinstance(value, str):
-            # Find all placeholders in the string value
-            new_value = value
-            for match in placeholder_pattern.finditer(value):
-                placeholder = match.group(0) # e.g., {row.ColumnName}
-                col_name = match.group(1).strip() # e.g., ColumnName
-                # Get value from row_data (case-insensitive fallback might be useful)
-                replacement = row_data.get(col_name)
-                # Handle None values - replace with empty string or null? Let's use empty string for simplicity
-                if replacement is None:
-                    replacement = ""
-                # Replace only the placeholder part - important if string has mixed content
-                # Convert replacement to string as we are replacing in a string context
-                new_value = new_value.replace(placeholder, str(replacement))
-            output_dict[key] = new_value
-        elif isinstance(value, dict):
-            output_dict[key] = replace_placeholders(value, row_data) # Recurse for nested dicts
-        elif isinstance(value, list):
-             # Process lists (optional - handle dicts within lists if needed)
-             # For now, just copy lists as is or handle simple string replacements
-             output_dict[key] = [
-                 replace_placeholders(item, row_data) if isinstance(item, dict)
-                 else (item.replace(placeholder, str(row_data.get(match.group(1).strip(), ""))) if isinstance(item, str) and placeholder_pattern.search(item) else item)
-                 for item in value
-                 for match in placeholder_pattern.finditer(str(item)) # Basic replacement in list strings
-                 for placeholder in [match.group(0)]
-             ] if value else [] # Handle empty lists
-             # This list handling is basic, might need refinement based on expected list content
-        else:
-            output_dict[key] = value # Copy numbers, booleans, etc., directly
-    return output_dict
+    Args:
+        template_data: The template structure (can be dict, list, string, etc.).
+        row_data: The dictionary containing data for the current row.
+
+    Returns:
+        The template structure with placeholders replaced.
+    """
+    # Regex to find placeholders like {row.ColumnName} or {row.Some Key}
+    # It captures the part inside the curly braces after 'row.'
+    placeholder_pattern = re.compile(r'{row\.([^}]+)}')
+
+    # If the template_data is a string, perform replacement
+    if isinstance(template_data, str):
+        # Use a function with findall to handle multiple placeholders correctly
+        def replace_match(match):
+            col_name = match.group(1).strip() # Get the column name (e.g., "Concatenated Key")
+            # Get value from row_data, default to empty string if not found or None
+            replacement = row_data.get(col_name, "")
+            return str(replacement) # Ensure replacement is a string
+
+        # Substitute all found placeholders in the string
+        return placeholder_pattern.sub(replace_match, template_data)
+
+    # If it's a dictionary, recurse through its values
+    elif isinstance(template_data, dict):
+        return {
+            key: replace_placeholders(value, row_data)
+            for key, value in template_data.items()
+        }
+
+    # If it's a list, recurse through its items
+    elif isinstance(template_data, list):
+        return [replace_placeholders(item, row_data) for item in template_data]
+
+    # Otherwise (numbers, booleans, None), return the value as is
+    else:
+        return template_data
 
 
-# --- Backend Route ---
+# --- Backend Route for Applying Configuration ---
 @update_bp.route('/api/apply-configuration', methods=['POST'])
 def apply_configuration():
     """
-    Applies a selected template to selected row identifiers, generates JSON payloads.
-    SIMULATES database update by logging payloads.
+    API endpoint to apply a selected template to selected row identifiers.
+    It loads the template, retrieves row data (from cache), generates
+    JSON payloads by replacing placeholders, and logs the results (simulating DB update).
+
+    Expects JSON payload:
+    {
+        "templateName": "template_filename.json",
+        "selectedRowsData": ["identifier1", "identifier2", ...] // List of unique identifiers
+    }
+
+    Returns:
+        JSON response indicating success, partial success, or failure.
     """
+    logger.info("Request received for /api/apply-configuration")
     try:
+        # --- 1. Get and Validate Request Data ---
         request_data = request.get_json()
         if not request_data:
-            return jsonify({"error": "Invalid JSON payload received."}), 400
+            logger.warning("Apply configuration request received with invalid/empty JSON payload.")
+            return jsonify({"error": "Invalid JSON payload received."}), 400 # Bad Request
 
         template_name = request_data.get('templateName')
-        # selected_rows_data should contain the actual data or identifiers
-        # Let's assume it contains identifiers (e.g., the unique key/item name)
-        selected_row_identifiers = request_data.get('selectedRowsData') # Expecting list of identifiers
+        # selected_row_identifiers is expected to be a list of strings (e.g., 'Item' or 'Concatenated Key' values)
+        selected_row_identifiers = request_data.get('selectedRowsData')
 
-        if not template_name or selected_row_identifiers is None: # Check for None explicitly for list
+        # Validate required fields
+        if not template_name or selected_row_identifiers is None:
+            logger.warning("Apply configuration request missing 'templateName' or 'selectedRowsData'.")
             return jsonify({"error": "Missing 'templateName' or 'selectedRowsData'."}), 400
         if not isinstance(selected_row_identifiers, list):
+             logger.warning("'selectedRowsData' received is not a list.")
              return jsonify({"error": "'selectedRowsData' must be a list."}), 400
 
-        logger.info(f"Received request to apply template '{template_name}' to {len(selected_row_identifiers)} items.")
+        logger.info(f"Attempting to apply template '{template_name}' to {len(selected_row_identifiers)} selected item(s).")
 
-        # --- 1. Load the Template ---
+        # --- 2. Load the Specified Template ---
+        # Basic security check on filename
         if '..' in template_name or template_name.startswith('/'):
-            abort(400, description="Invalid template name.")
+            logger.error(f"Invalid template name requested: {template_name}")
+            abort(400, description="Invalid template name.") # Bad Request
+
         template_path = os.path.join(TEMPLATE_DIR, template_name)
-        if not os.path.exists(template_path):
-            logger.error(f"Template file not found: {template_path}")
-            return jsonify({"error": f"Template '{template_name}' not found."}), 404
+        if not os.path.exists(template_path) or not os.path.isfile(template_path):
+            logger.error(f"Template file not found at path: {template_path}")
+            return jsonify({"error": f"Template '{template_name}' not found."}), 404 # Not Found
 
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
-                template_json = json.load(f)
-            logger.debug(f"Loaded template '{template_name}'.")
+                template_json = json.load(f) # Load the template structure
+            logger.debug(f"Successfully loaded template '{template_name}'.")
         except Exception as e:
-            logger.error(f"Error reading or parsing template {template_name}: {e}", exc_info=True)
-            return jsonify({"error": f"Failed to load or parse template '{template_name}'."}), 500
+            logger.error(f"Error reading or parsing template file {template_name}: {e}", exc_info=True)
+            return jsonify({"error": f"Failed to load or parse template '{template_name}'."}), 500 # Server Error
 
-        # --- 2. Get Data for Selected Rows (from cache/Excel data) ---
-        # This part needs access to the data loaded by the main app.
-        # We assume the main app stores it in current_app.config['EXCEL_DATA']
-        # The structure is {'Sheet Name': [{'Item':.., 'ID':.., 'Status':..}, ...]}
-        # We need to find the rows matching the identifiers across *all* sheets in the cache.
-        # This simulation assumes identifiers are unique across comparison types.
-        # A real app would likely query a database using these identifiers.
-
-        all_excel_data = current_app.config.get('EXCEL_DATA', {})
+        # --- 3. Retrieve Data for Selected Rows (from cached Excel data) ---
+        # This simulates fetching data based on identifiers.
+        # In a real app, you might query a database here using the identifiers.
+        all_excel_data = current_app.config.get('EXCEL_DATA', {}) # Get data cached by ui_viewer.py
         rows_to_process = []
-        processed_identifiers = set() # Avoid duplicates if ID appears in multiple sheets
-        identifier_key_map = {} # Map identifier back to its primary key name ('Item' or 'Concatenated Key')
+        processed_identifiers = set() # Track identifiers found to avoid duplicates
+        identifier_key_map = {} # Stores which key ('Item' or 'Concatenated Key') matched the identifier
 
+        # Iterate through all comparison sheets in the cached data
         for sheet_name, sheet_data in all_excel_data.items():
-            # Determine the identifier key for this sheet type
-            is_skill_expr = (sheet_name == "Skill_exprs Comparison")
-            id_key = "Concatenated Key" if is_skill_expr else "Item"
+            # Determine the primary identifier key for this sheet type
+            id_key = IDENTIFIER_KEYS.get(sheet_name)
+            if not id_key:
+                logging.warning(f"No identifier key defined for sheet '{sheet_name}', skipping.")
+                continue
 
+            # Find rows matching the selected identifiers in this sheet
             for row in sheet_data:
                 row_identifier = row.get(id_key)
+                # Check if this row's identifier is in the requested list and not already processed
                 if row_identifier in selected_row_identifiers and row_identifier not in processed_identifiers:
-                    rows_to_process.append(row) # Add the whole row dict
-                    processed_identifiers.add(row_identifier)
-                    identifier_key_map[row_identifier] = id_key # Store which key was used
+                    rows_to_process.append(row) # Add the full row dictionary
+                    processed_identifiers.add(row_identifier) # Mark as processed
+                    identifier_key_map[row_identifier] = id_key # Remember which key matched
 
         found_count = len(rows_to_process)
-        missing_count = len(selected_row_identifiers) - found_count
-        logger.info(f"Found data for {found_count} selected identifiers. Missing data for {missing_count} identifiers.")
+        missing_identifiers = set(selected_row_identifiers) - processed_identifiers
+        missing_count = len(missing_identifiers)
+        logger.info(f"Retrieved data for {found_count} of {len(selected_row_identifiers)} selected identifiers from cached data.")
         if missing_count > 0:
-             logger.warning(f"Could not find data for identifiers: {set(selected_row_identifiers) - processed_identifiers}")
+             logger.warning(f"Could not find cached data for identifiers: {missing_identifiers}")
 
 
-        # --- 3. Generate Payloads ---
+        # --- 4. Generate Payloads using Template and Row Data ---
         final_payloads = []
         processing_errors = []
         for row_data in rows_to_process:
+            row_id_for_log = row_data.get(identifier_key_map.get(row_data.get('Item', row_data.get('Concatenated Key'))), 'UNKNOWN_ID')
             try:
-                # Generate the payload using the template and row data
+                # Use the helper function to replace placeholders in the template
                 generated_payload = replace_placeholders(template_json, row_data)
                 final_payloads.append(generated_payload)
-                logger.debug(f"Generated payload for row identifier '{row_data.get(identifier_key_map.get(row_data.get('Item', row_data.get('Concatenated Key'))), 'UNKNOWN')}': {generated_payload}")
+                logging.debug(f"Generated payload for row identifier '{row_id_for_log}'.") # Avoid logging full payload at debug level
             except Exception as e:
-                row_id = row_data.get(identifier_key_map.get(row_data.get('Item', row_data.get('Concatenated Key'))), 'UNKNOWN')
-                logger.error(f"Error processing template for row identifier '{row_id}': {e}", exc_info=True)
-                processing_errors.append(f"Error processing row '{row_id}': {e}")
+                # Catch errors during placeholder replacement for a specific row
+                logger.error(f"Error processing template for row identifier '{row_id_for_log}': {e}", exc_info=True)
+                processing_errors.append(f"Error processing row '{row_id_for_log}': {e}")
 
-        # --- 4. SIMULATE Database Update ---
-        # In a real application, you would send `final_payloads` to your database update API/service here.
-        logger.info(f"--- SIMULATING DATABASE UPDATE ---")
-        logger.info(f"Generated {len(final_payloads)} payloads to send for update using template '{template_name}'.")
+        # --- 5. SIMULATE Database Update ---
+        # In a real application, you would now send the `final_payloads` list
+        # to your actual database update API endpoint or service.
+        logger.info(f"--- SIMULATING DATABASE UPDATE (START) ---")
+        logger.info(f"Template: '{template_name}'")
+        logger.info(f"Generated {len(final_payloads)} payloads to be sent for update.")
         if final_payloads:
-             # Log first few payloads for inspection (be careful with sensitive data in real logs)
-             log_limit = 3
+             # Log the generated payloads (or a summary) for verification.
+             # Be cautious about logging sensitive data in production environments.
+             log_limit = 5 # Limit how many full payloads are logged
              logger.info(f"Example Payloads (limit {log_limit}):")
              for i, payload in enumerate(final_payloads[:log_limit]):
-                 logger.info(f"Payload {i+1}: {json.dumps(payload)}") # Log generated JSON
+                 try:
+                     # Log payload as pretty-printed JSON string
+                     logger.info(f"Payload {i+1}: {json.dumps(payload, indent=2)}")
+                 except Exception as json_e:
+                     logger.error(f"Error converting payload {i+1} to JSON for logging: {json_e}")
+                     logger.info(f"Payload {i+1} (raw): {payload}") # Log raw dict as fallback
+
              if len(final_payloads) > log_limit:
-                 logger.info(f"... and {len(final_payloads) - log_limit} more payloads.")
-        logger.info(f"--- END SIMULATION ---")
+                 logger.info(f"... and {len(final_payloads) - log_limit} more payloads generated but not logged in detail.")
+        # --- SIMULATION END --- You would add your actual DB update call here ---
 
 
-        # --- 5. Return Response ---
-        response_message = f"Processed {found_count} of {len(selected_row_identifiers)} selected items using template '{template_name}'. Payloads generated and logged (simulation)."
+        # --- 6. Construct and Return Response ---
+        response_status_code = 200 # Default OK
+        response_data = {
+            "message": f"Processed {found_count} of {len(selected_row_identifiers)} selected items using template '{template_name}'. Payloads generated and logged (simulation).",
+            "status": "Success",
+            "processed_count": found_count,
+            "payload_count": len(final_payloads),
+            "errors": []
+        }
+
         if missing_count > 0:
-             response_message += f" Could not find data for {missing_count} items."
+             response_data["message"] += f" Could not find data for {missing_count} identifiers: {list(missing_identifiers)}."
+             response_data["status"] = "Partial Success / Missing Data"
+             response_status_code = 207 # Multi-Status
+             logger.warning(response_data["message"])
+
         if processing_errors:
-             response_message += f" Encountered {len(processing_errors)} errors during processing."
-             return jsonify({
-                 "message": response_message,
-                 "status": "Partial Success / Errors",
-                 "processed_count": found_count,
-                 "payload_count": len(final_payloads),
-                 "errors": processing_errors
-             }), 207 # Multi-Status
-        else:
-             return jsonify({
-                 "message": response_message,
-                 "status": "Success",
-                 "processed_count": found_count,
-                 "payload_count": len(final_payloads)
-             }), 200
+             response_data["errors"] = processing_errors
+             response_data["message"] += f" Encountered {len(processing_errors)} errors during payload generation."
+             # If there were already missing items, keep 207, otherwise use 207 for processing errors too
+             response_data["status"] = "Partial Success / Errors" if response_status_code == 200 else response_data["status"]
+             response_status_code = 207 # Multi-Status
+             logger.error(f"Processing errors occurred: {processing_errors}")
+
+
+        return jsonify(response_data), response_status_code
 
     except Exception as e:
+        # Catch any other unexpected errors during the process
         logger.error(f"Unexpected error in /api/apply-configuration: {e}", exc_info=True)
-        return jsonify({"error": "An internal server error occurred."}), 500
+        return jsonify({"error": "An internal server error occurred."}), 500 # Internal Server Error
+

@@ -19,63 +19,72 @@ import sys
 import glob
 import logging
 import math
-from flask import Flask, render_template_string, abort, request, redirect, url_for, jsonify # Added jsonify
+from flask import Flask, render_template_string, abort, request, redirect, url_for, jsonify
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
 from typing import List, Dict, Any, Optional, Tuple
 
 # --- Import Blueprints ---
+# These files contain the route definitions for specific features
 # Make sure these files exist in the same directory
 try:
     from template_routes import template_bp
     from update_routes import update_bp
 except ImportError as e:
+    # Log and print error if blueprint files cannot be imported
     print(f"ERROR: Could not import Blueprints. Make sure 'template_routes.py' and 'update_routes.py' exist. Details: {e}")
-    # Optionally exit if blueprints are critical
-    # sys.exit(1)
-    # Or handle gracefully later if possible
-    template_bp = None
-    update_bp = None
+    # Exit if blueprints are essential for the app to function
+    sys.exit(1)
+    # Or handle gracefully later if possible by setting to None
+    # template_bp = None
+    # update_bp = None
 
 
 # --- Constants ---
 LOG_FILE_UI = 'ui_viewer.log'
 DEFAULT_PAGE_SIZE = 100
-PAGE_SIZE_OPTIONS = [100, 200, 500, 1000] # Numeric options
-COMPARISON_SUFFIX = " Comparison"
-SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Constant for the special sheet
-TEMPLATE_DIR = './config_templates/' # Define template dir constant here too
+PAGE_SIZE_OPTIONS = [100, 200, 500, 1000] # Numeric options for page size dropdown
+COMPARISON_SUFFIX = " Comparison" # Expected suffix for comparison sheet names
+SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Specific name for the skill expression comparison sheet
+TEMPLATE_DIR = './config_templates/' # Directory to store JSON configuration templates
 
 # --- Logging Setup ---
-# (Same as previous version)
+# Configure logging to file and console
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO, # Set root logger level (can be DEBUG for more detail)
     format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE_UI, mode='w'),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE_UI, mode='w'), # Overwrite log file each run
+        logging.StreamHandler() # Log to console (stderr by default)
     ]
 )
+# Adjust console handler level if needed (e.g., only show INFO+)
 for handler in logging.getLogger().handlers:
     if isinstance(handler, logging.StreamHandler):
         handler.setLevel(logging.INFO)
-        formatter = logging.Formatter('%(levelname)s: %(message)s')
+        formatter = logging.Formatter('%(levelname)s: %(message)s') # Simpler format for console
         handler.setFormatter(formatter)
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
-app.config['EXCEL_DATA'] = {} # Simple cache for Excel data
-app.config['EXCEL_FILENAME'] = None
-app.config['COMPARISON_SHEETS'] = []
+# Using app.config as a simple in-memory cache for the loaded Excel data.
+# In a larger application, consider Flask's 'g' object or a dedicated cache.
+app.config['EXCEL_DATA'] = {} # Cache for {'Sheet Name': [list_of_row_dicts]}
+app.config['EXCEL_FILENAME'] = None # Cache for the name of the loaded file
+app.config['COMPARISON_SHEETS'] = [] # Cache for the list of comparison sheet names found
 
 # --- Register Blueprints ---
+# Register the routes defined in the imported blueprint files
 if template_bp:
     app.register_blueprint(template_bp)
+    logging.info("Registered template_bp Blueprint.")
 if update_bp:
     app.register_blueprint(update_bp)
+    logging.info("Registered update_bp Blueprint.")
 
 
-# --- HTML Template (FIXED table layout and ID wrapping) ---
+# --- HTML Template ---
+# Main Jinja2 template for rendering the UI pages
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -83,33 +92,47 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }} - Comparison Report</title>
+    {# Load Tailwind CSS via CDN for styling #}
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    {# Load Lucide icons library #}
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
     <style>
+        /* Basic table row styling */
         tbody tr:nth-child(odd) { background-color: #f9fafb; } /* gray-50 */
         tbody tr:hover { background-color: #f3f4f6; } /* gray-100 */
-        tbody tr.selected-row { background-color: #dbeafe !important; } /* blue-100 */
+        tbody tr.selected-row { background-color: #dbeafe !important; } /* blue-100 for selected rows */
+        /* Styling for sortable header links */
         th a { display: inline-flex; align-items: center; gap: 0.25rem; }
         th a:hover { text-decoration: underline; }
         .sort-icon { width: 1em; height: 1em; stroke-width: 2; }
-        /* Removed table-fixed-layout class from table below */
+        /* Table layout - switched back to auto for better resizing */
+        /* .table-fixed-layout { table-layout: fixed; width: 100%; } */
+        /* Action Bar fixed positioning and animation */
+        #actionBar {
+            transition: transform 0.3s ease-in-out;
+            transform: translateY(100%); /* Start hidden below view */
+        }
+        #actionBar.visible {
+            transform: translateY(0); /* Slide into view */
+        }
     </style>
 </head>
-<body class="bg-gray-100 font-sans pb-20"> {# Added padding-bottom #}
+<body class="bg-gray-100 font-sans pb-20"> {# Padding bottom to prevent overlap with action bar #}
     <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+        {# Main Page Header #}
         <h1 class="text-3xl font-bold text-gray-800 mb-4">Excel vs API Comparison Report</h1>
         <p class="mb-4 text-sm text-gray-500">Source File: <code class="bg-gray-200 px-1 rounded">{{ filename }}</code></p>
 
         {# Navigation Tabs #}
         <div class="mb-6 border-b border-gray-300">
-            <nav class="-mb-px flex space-x-6 overflow-x-auto" aria-label="Tabs"> {# Added overflow-x-auto #}
-                {# Links to Comparison Views #}
+            <nav class="-mb-px flex space-x-6 overflow-x-auto pb-1" aria-label="Tabs"> {# Allow horizontal scroll on small screens #}
+                {# Links to Comparison Views - preserve sort/size #}
                 {% for sheet in available_sheets %}
                     <a href="{{ url_for('view_comparison', comparison_type=sheet, sort_by=sort_by, order=sort_order, size=page_size_str) }}"
                        class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
-                              {% if sheet == current_comparison_type %} border-indigo-500 text-indigo-600
+                              {% if sheet == current_comparison_type %} border-indigo-500 text-indigo-600 {# Active tab style #}
                               {% else %} border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 {% endif %}">
-                        {{ sheet.replace(comparison_suffix, '') }}
+                        {{ sheet.replace(comparison_suffix, '') }} {# Display cleaner name #}
                     </a>
                 {% endfor %}
                 {# Link to Template Manager #}
@@ -117,21 +140,22 @@ HTML_TEMPLATE = """
                    class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
                    Config Templates
                 </a>
+                 {# Reload Data Button #}
                  <a href="{{ url_for('refresh_data') }}" title="Reload data from Excel file"
-                    class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600"> {# Added flex-shrink-0 #}
+                    class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600"> {# Prevent button shrinking #}
                     <i data-lucide="refresh-cw" class="inline-block w-4 h-4"></i> Reload Data
                  </a>
             </nav>
         </div>
 
-        {# General Error Display Area #}
+        {# General Error/Message Display Area #}
         <div id="generalMessageArea" class="mb-4">
             {% if error %}
                 <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
                     <strong class="font-bold">Error:</strong> <span class="block sm:inline">{{ error }}</span>
                 </div>
             {% endif %}
-             {# Check pagination exists before accessing total_items #}
+             {# Show message if no data exists after loading #}
              {% if not page_data and not error and (not pagination or pagination.total_items == 0) %}
                  <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative" role="alert">
                     <strong class="font-bold">Note:</strong>
@@ -140,20 +164,22 @@ HTML_TEMPLATE = """
             {% endif %}
         </div>
 
-        {# Main Content Area - Table - Check pagination exists AND has items #}
+        {# Main Content Area - Table (Only shown if pagination data exists) #}
         {% if pagination and pagination.total_items > 0 %}
             <div class="bg-white shadow-md rounded-lg overflow-hidden">
+                {# Table Title and Selection Count #}
                 <h2 class="text-xl font-semibold text-gray-700 bg-gray-100 px-6 py-3 border-b flex justify-between items-center">
                     <span>{{ current_comparison_type }}</span>
                     <span id="selectionCount" class="text-sm font-normal text-gray-600 mr-4" style="display: none;">0 rows selected</span>
                 </h2>
+                {# Table container with horizontal scroll #}
                 <div class="overflow-x-auto p-3">
-                    {# --- MODIFICATION: Removed table-fixed-layout --- #}
+                    {# Removed table-fixed-layout for auto column sizing #}
                     <table id="dataTable" class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
-                             {# --- Conditional Headers --- #}
+                             {# --- Conditional Headers based on sheet type --- #}
                             {% if current_comparison_type == skill_expr_sheet_name %}
-                                {# 5 Columns + Checkbox for Skill Exprs #}
+                                {# 5 Data Columns + 1 Checkbox Column for Skill Exprs #}
                                 <tr>
                                     <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
                                         <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
@@ -174,7 +200,7 @@ HTML_TEMPLATE = """
                                             Ideal Expression {% if sort_by == 'Ideal Expression' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID - Added whitespace-nowrap #}
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID #}
                                          <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='ID', order='desc' if sort_by == 'ID' and sort_order == 'asc' else 'asc') }}">
                                             ID {% if sort_by == 'ID' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
@@ -186,7 +212,7 @@ HTML_TEMPLATE = """
                                     </th>
                                 </tr>
                             {% else %}
-                                {# 3 Columns + Checkbox for Others #}
+                                {# 3 Data Columns + 1 Checkbox Column for Others #}
                                 <tr>
                                      <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
                                         <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
@@ -194,11 +220,12 @@ HTML_TEMPLATE = """
                                     </th>
                                     <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Item #}
                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Item', order='desc' if sort_by == 'Item' and sort_order == 'asc' else 'asc') }}">
+                                            {# Use Header value from data if available, fallback to 'Item' #}
                                             {{ page_data[0].get('Header', 'Item') if page_data else 'Item' }}
                                             {% if sort_by == 'Item' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID - Added whitespace-nowrap #}
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID #}
                                          <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='ID', order='desc' if sort_by == 'ID' and sort_order == 'asc' else 'asc') }}">
                                             ID (from API) {% if sort_by == 'ID' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
                                         </a>
@@ -213,28 +240,28 @@ HTML_TEMPLATE = """
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             {% for row in page_data %}
-                                {# Determine the unique identifier for this row #}
+                                {# Determine the unique identifier for this row (used for checkbox value) #}
                                 {% set row_id = row.get('Concatenated Key') if current_comparison_type == skill_expr_sheet_name else row.get('Item') %}
-                                <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id | default('', True) }}"> {# Use loop index for unique DOM id #}
+                                <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id | default('', True) }}"> {# Use loop index for unique DOM id, store identifier in data attribute #}
+                                    {# Checkbox Cell #}
                                     <td class="px-4 py-3 text-center">
                                         <input type="checkbox" name="rowSelection" value="{{ row_id | default('', True) }}" onchange="handleRowSelectionChange()"
                                                class="row-checkbox h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                                     </td>
+                                    {# Conditional Data Cells #}
                                     {% if current_comparison_type == skill_expr_sheet_name %}
-                                        {# 5 Columns for Skill Exprs #}
+                                        {# 5 Data Columns for Skill Exprs #}
                                         <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Concatenated Key', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Expression', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Ideal Expression', '') | default('', True) }}</td>
-                                        {# --- MODIFICATION: Added whitespace-nowrap to ID cell --- #}
-                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td>
+                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td> {# Prevent ID wrap #}
                                         <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}">
                                             {{ row.get('Status', '') | default('', True) }}
                                         </td>
                                     {% else %}
-                                         {# 3 Columns for Others #}
+                                         {# 3 Data Columns for Others #}
                                         <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Item', '') | default('', True) }}</td>
-                                        {# --- MODIFICATION: Added whitespace-nowrap to ID cell --- #}
-                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td>
+                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td> {# Prevent ID wrap #}
                                         <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}">
                                             {{ row.get('Status', '') | default('', True) }}
                                         </td>
@@ -245,8 +272,9 @@ HTML_TEMPLATE = """
                     </table>
                 </div>
 
-                {# Pagination and Page Size Controls #}
+                {# Pagination and Page Size Controls Footer #}
                 <div class="bg-white px-4 py-3 flex items-center justify-between border-t border-gray-200 sm:px-6">
+                     {# Left side: Page size selector #}
                      <div class="flex items-center text-sm text-gray-700">
                          <label for="pageSize" class="mr-2">Show:</label>
                          <select id="pageSize" name="size" class="border border-gray-300 rounded-md text-sm p-1"
@@ -258,19 +286,24 @@ HTML_TEMPLATE = """
                          </select>
                          <span class="ml-2">results per page</span>
                      </div>
+                     {# Right side: Pagination info and buttons #}
                      <div class="flex items-center">
                          <p class="text-sm text-gray-700 mr-4 hidden md:block">
                              Showing <span class="font-medium">{{ pagination.start_item }}</span> to <span class="font-medium">{{ pagination.end_item }}</span> of <span class="font-medium">{{ pagination.total_items }}</span> results
                          </p>
+                         {# Pagination buttons only shown if more than one page #}
                          {% if pagination.total_pages > 1 %}
                          <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+                              {# Previous Button #}
                               <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}"
                                  class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}">
                                   <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i>
                               </a>
+                              {# Page Indicator #}
                               <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex">
                                 Page {{ pagination.page }} of {{ pagination.total_pages }}
                               </span>
+                              {# Next Button #}
                               <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}"
                                  class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}">
                                   <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i>
@@ -278,7 +311,7 @@ HTML_TEMPLATE = """
                          </nav>
                          {% endif %}
                      </div>
-                 </div>
+                 </div> {# End Pagination & Size Controls Footer #}
             </div>
         {% endif %} {# End if pagination and pagination.total_items > 0 #}
     </div>{# End Container #}
@@ -288,7 +321,7 @@ HTML_TEMPLATE = """
         <span id="actionBarMessage" class="text-sm font-medium">Select rows to apply configuration.</span>
         <div class="flex items-center space-x-4">
              <label for="templateSelect" class="text-sm">Apply Template:</label>
-             <select id="templateSelect" name="template" class="text-black border border-gray-300 rounded-md text-sm p-1.5">
+             <select id="templateSelect" name="template" class="text-black border border-gray-300 rounded-md text-sm p-1.5 min-w-[150px]"> {# Added min-width #}
                  <option value="">Loading templates...</option>
              </select>
              <button id="applyButton" onclick="applyConfiguration()" disabled
@@ -298,23 +331,30 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    {# --- JavaScript Section --- #}
     <script>
+      // Initialize Lucide icons used in the template
       lucide.createIcons();
 
+      // --- DOM Element References ---
       const actionBar = document.getElementById('actionBar');
       const actionBarMessage = document.getElementById('actionBarMessage');
       const applyButton = document.getElementById('applyButton');
       const templateSelect = document.getElementById('templateSelect');
       const selectionCountEl = document.getElementById('selectionCount');
       const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-      const rowCheckboxes = document.querySelectorAll('.row-checkbox');
+      const rowCheckboxes = document.querySelectorAll('.row-checkbox'); // NodeList of all row checkboxes
       const generalMessageArea = document.getElementById('generalMessageArea'); // Area for apply results
 
-      // --- Page Size Change ---
+      // --- Page Size Change Handler ---
       function handlePageSizeChange(newSize) {
+        // Get current URL
         const url = new URL(window.location.href);
+        // Set new size parameter
         url.searchParams.set('size', newSize);
-        url.searchParams.set('page', '1'); // Reset to page 1
+        // Reset page to 1 when size changes for consistency
+        url.searchParams.set('page', '1');
+        // Navigate to the new URL
         window.location.href = url.toString();
       }
 
@@ -322,107 +362,135 @@ HTML_TEMPLATE = """
       let selectedRowCount = 0;
 
       function updateSelectionCount() {
+          // Count how many row checkboxes are currently checked
           selectedRowCount = document.querySelectorAll('.row-checkbox:checked').length;
+
+          // Update the selection count display text (e.g., "3 rows selected")
           if (selectionCountEl) {
               if (selectedRowCount > 0) {
                  selectionCountEl.textContent = `${selectedRowCount} row${selectedRowCount > 1 ? 's' : ''} selected`;
-                 selectionCountEl.style.display = 'inline';
+                 selectionCountEl.style.display = 'inline'; // Show the count
               } else {
-                 selectionCountEl.style.display = 'none';
+                 selectionCountEl.style.display = 'none'; // Hide if zero selected
               }
           }
-          // Toggle action bar visibility
+
+          // Show or hide the bottom Action Bar based on selection
           if (selectedRowCount > 0) {
-              actionBar.classList.add('visible');
+              actionBar.classList.add('visible'); // Make action bar slide in
               actionBarMessage.textContent = `${selectedRowCount} row${selectedRowCount > 1 ? 's' : ''} selected.`;
-              applyButton.disabled = templateSelect.value === ""; // Enable button only if a template is selected
+              // Enable the 'Apply' button only if a template is also selected from the dropdown
+              applyButton.disabled = templateSelect.value === "";
           } else {
-              actionBar.classList.remove('visible');
+              actionBar.classList.remove('visible'); // Make action bar slide out
               actionBarMessage.textContent = 'Select rows to apply configuration.';
-              applyButton.disabled = true;
+              applyButton.disabled = true; // Disable 'Apply' button if no rows selected
           }
-          // Update Select All checkbox state
+
+          // Update the state of the "Select All" checkbox in the header
           if (selectAllCheckbox) {
               const totalCheckboxes = rowCheckboxes.length;
-              selectAllCheckbox.checked = (totalCheckboxes > 0 && selectedRowCount === totalCheckboxes);
-              // Make indeterminate only if some, but not all, are checked
-              selectAllCheckbox.indeterminate = (selectedRowCount > 0 && selectedRowCount < totalCheckboxes);
+              if (totalCheckboxes > 0) {
+                  selectAllCheckbox.checked = (selectedRowCount === totalCheckboxes);
+                  // Set indeterminate state if some but not all rows are selected
+                  selectAllCheckbox.indeterminate = (selectedRowCount > 0 && selectedRowCount < totalCheckboxes);
+              } else {
+                   selectAllCheckbox.checked = false;
+                   selectAllCheckbox.indeterminate = false;
+              }
           }
       }
 
+      // Function called when an individual row checkbox changes state
       function handleRowSelectionChange() {
-          // Add/remove highlight class (optional)
+          // Optional: Add/remove a visual highlight class to the selected table row
           document.querySelectorAll('.row-checkbox').forEach(cb => {
-              const row = cb.closest('tr');
+              const row = cb.closest('tr'); // Find the parent <tr> element
               if (row) {
-                  row.classList.toggle('selected-row', cb.checked);
+                  row.classList.toggle('selected-row', cb.checked); // Add/remove class based on checked state
               }
           });
+          // Update the selection count and action bar visibility
           updateSelectionCount();
       }
 
+      // Function called when the "Select All" checkbox changes state
       function toggleSelectAll(checked) {
+          // Check or uncheck all row checkboxes based on the 'checked' argument
           rowCheckboxes.forEach(checkbox => {
               checkbox.checked = checked;
+              // Also update the visual highlight for each row
               const row = checkbox.closest('tr');
                if (row) {
                   row.classList.toggle('selected-row', checked);
               }
           });
+          // Update the selection count and action bar visibility
           updateSelectionCount();
       }
 
-      // Attach listeners to existing checkboxes on page load
+      // --- Initial Setup on Page Load ---
       document.addEventListener('DOMContentLoaded', () => {
+          // Add event listeners to all row checkboxes
           rowCheckboxes.forEach(checkbox => {
               checkbox.addEventListener('change', handleRowSelectionChange);
           });
+          // Add event listener to the "Select All" checkbox
           if (selectAllCheckbox) {
              selectAllCheckbox.addEventListener('change', (e) => toggleSelectAll(e.target.checked));
           }
-          loadTemplatesForDropdown(); // Load templates into dropdown
-          updateSelectionCount(); // Initial check in case of back navigation
+          // Load the available templates into the dropdown in the action bar
+          loadTemplatesForDropdown();
+          // Update counts and action bar state on initial load (handles back navigation)
+          updateSelectionCount();
       });
 
-      // --- Template Loading for Dropdown ---
+      // --- Template Loading for Action Bar Dropdown ---
       async function loadTemplatesForDropdown() {
           try {
+              // Fetch the list of template filenames from the backend endpoint
               const response = await fetch('{{ url_for("templates.list_templates") }}');
               if (!response.ok) throw new Error('Failed to fetch templates');
-              const templates = await response.json();
+              const templates = await response.json(); // Expecting a list of filenames like ["template1.json", ...]
 
-              templateSelect.innerHTML = '<option value="">-- Select Template --</option>'; // Default option
+              // Clear existing options and add a default placeholder
+              templateSelect.innerHTML = '<option value="">-- Select Template --</option>';
               if (templates.length > 0) {
+                  // Populate the dropdown with template names (without .json extension)
                   templates.forEach(filename => {
                       const option = document.createElement('option');
-                      option.value = filename;
-                      option.textContent = filename.replace('.json', '');
+                      option.value = filename; // Value is the full filename
+                      option.textContent = filename.replace('.json', ''); // Display name without extension
                       templateSelect.appendChild(option);
                   });
-                   templateSelect.disabled = false;
+                   templateSelect.disabled = false; // Enable dropdown
               } else {
+                   // Show message if no templates are found
                    templateSelect.innerHTML = '<option value="">No templates found</option>';
-                   templateSelect.disabled = true; // Disable if no templates
+                   templateSelect.disabled = true; // Disable dropdown
               }
           } catch (error) {
               console.error('Error loading templates for dropdown:', error);
               templateSelect.innerHTML = '<option value="">Error loading</option>';
-              templateSelect.disabled = true;
+              templateSelect.disabled = true; // Disable on error
           }
       }
-      // Update apply button state when template selection changes
+
+      // Add listener to template dropdown to enable/disable apply button
        templateSelect.addEventListener('change', () => {
+            // Enable apply button only if rows are selected AND a template is chosen
             applyButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
        });
 
 
-      // --- Apply Configuration ---
+      // --- Apply Configuration Action ---
       async function applyConfiguration() {
-            const selectedTemplate = templateSelect.value;
-            const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
-            // Get the identifier from the 'value' attribute of the checkbox
-            const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id);
+            const selectedTemplate = templateSelect.value; // Get selected template filename
+            const checkedBoxes = document.querySelectorAll('.row-checkbox:checked'); // Get all checked row checkboxes
+            // Extract the unique identifier stored in the 'value' attribute of each checked checkbox
+            const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id); // Filter out any potentially empty values
 
+            // Basic validation
             if (!selectedTemplate) {
                 alert('Please select a configuration template.');
                 return;
@@ -432,55 +500,60 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            // Disable button during processing
-            applyButton.disabled = true;
-            applyButton.textContent = 'Processing...';
-            // Show general message area for feedback
-            generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Applying configuration...</div>`;
+            // --- UI Feedback: Start Processing ---
+            applyButton.disabled = true; // Disable button
+            applyButton.textContent = 'Processing...'; // Change button text
+            // Display a message indicating processing has started
+            generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Applying configuration template '${selectedTemplate.replace('.json','')}' to ${selectedIds.length} selected item(s)...</div>`;
 
-
+            // --- API Call ---
             try {
+                // Send selected template name and row identifiers to the backend API endpoint
                 const response = await fetch('{{ url_for("updates.apply_configuration") }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         templateName: selectedTemplate,
-                        selectedRowsData: selectedIds // Send identifiers
+                        selectedRowsData: selectedIds // Send the list of identifiers
                     })
                 });
 
-                const result = await response.json(); // Always expect JSON back
+                const result = await response.json(); // Expecting JSON response {message: ..., status: ..., errors?: []}
 
-                if (response.ok) { // Status 200-299
+                // --- UI Feedback: Handle Response ---
+                if (response.ok) { // Status 200-299 indicates success or partial success
                      let messageClass = 'bg-green-100 border-green-300 text-green-700';
                      let title = 'Success';
-                     // Check for partial success reported by backend
-                     if (response.status === 207 || (result.status && result.status.includes('Partial'))) {
+                     // Check for specific status codes or messages indicating partial success/warnings
+                     if (response.status === 207 || (result.status && result.status.toLowerCase().includes('partial'))) {
                          messageClass = 'bg-yellow-100 border-yellow-300 text-yellow-700';
                          title = 'Partial Success / Warnings';
                      }
+                     // Display success/warning message
                      generalMessageArea.innerHTML = `<div class="${messageClass} px-4 py-3 rounded relative border" role="alert">
                         <strong class="font-bold">${title}:</strong> ${result.message || 'Configuration applied.'} (Payloads logged server-side)
-                        ${result.errors ? `<br><span class='text-xs'>Errors: ${result.errors.join(', ')}</span>` : ''}
+                        ${result.errors ? `<br><span class='text-xs'>Errors: ${result.errors.join('; ')}</span>` : ''} {# Display errors if present #}
                      </div>`;
                      // Optionally clear selection after success/partial success
-                     // toggleSelectAll(false);
+                     // toggleSelectAll(false); // Uncomment to deselect rows
                 } else {
-                    // Handle specific error messages from backend if available
+                    // Handle application-level errors reported by the backend
                     throw new Error(result.error || `Request failed with status ${response.status}`);
                 }
 
             } catch (error) {
+                // Handle network errors or errors parsing the response
                 console.error('Error applying configuration:', error);
-                 generalMessageArea.innerHTML = `<div class="bg-red-100 border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
-                    <strong class="font-bold">Error:</strong> Failed to apply configuration. ${error.message}. Check server logs.
+                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                    <strong class="font-bold">Error:</strong> Failed to apply configuration. ${error.message}. Check server logs (${LOG_FILE_UI}).
                  </div>`;
             } finally {
-                // Re-enable button and restore text
-                 applyButton.disabled = selectedRowCount === 0 || templateSelect.value === ""; // Re-evaluate disabled state
+                // --- UI Feedback: End Processing ---
+                // Re-enable button and restore text, considering current selection state
+                 applyButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
                  applyButton.textContent = 'Apply & Update DB';
-                 // Optional: Auto-hide message after some time
-                 // setTimeout(() => { generalMessageArea.innerHTML = ''; }, 10000);
+                 // Optional: Auto-hide the result message after some time
+                 // setTimeout(() => { generalMessageArea.innerHTML = ''; }, 15000); // Hide after 15 seconds
             }
       }
 
