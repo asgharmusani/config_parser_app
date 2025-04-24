@@ -1,5 +1,10 @@
 # Ignore logs
 *.log
+*.txt
+
+# Ignore excel files
+*.xlsx
+*.xls
 
 # Python cache
 __pycache__/
