@@ -5,15 +5,13 @@ Flask Web Application to display comparison results from the
 
 Features:
 - Finds the latest '*_processed.xlsx' file.
-- Separate pages for each comparison type (VQs, Skills, etc.).
-- Handles specific 5-column layout for 'Skill_exprs Comparison'.
-- Reads Max ID from 'Metadata' sheet for template functions.
-- Server-side pagination with selectable page size (100, 200, 500, 1000, All).
-- Server-side sorting by relevant columns for each view.
-- Displays data in a web browser using Flask and Tailwind CSS.
+- Separate pages for each comparison type.
+- Reads headers dynamically from comparison sheets and uses them as keys.
+- Reads Max IDs from 'Metadata' sheet.
+- Server-side pagination with selectable page size.
+- Server-side sorting by actual column headers.
 - Includes Configuration Template Management section.
-- Allows applying templates to selected rows, simulating the results,
-  and confirming the update (which is logged server-side).
+- Allows applying templates (placeholders use actual headers, case-insensitive).
 """
 
 import os
@@ -37,9 +35,6 @@ except ImportError as e:
     print(f"ERROR: Could not import Blueprints. Make sure 'template_routes.py' and 'update_routes.py' exist. Details: {e}")
     # Exit if blueprints are essential for the app to function
     sys.exit(1)
-    # Or handle gracefully later if possible by setting to None
-    # template_bp = None
-    # update_bp = None
 
 
 # --- Constants ---
@@ -47,21 +42,23 @@ LOG_FILE_UI = 'ui_viewer.log'
 DEFAULT_PAGE_SIZE = 100
 PAGE_SIZE_OPTIONS = [100, 200, 500, 1000] # Numeric options for page size dropdown
 COMPARISON_SUFFIX = " Comparison" # Expected suffix for comparison sheet names
+# --- MODIFICATION: Uncommented the constant ---
 SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Specific name for the skill expression comparison sheet
+# --- END MODIFICATION ---
 TEMPLATE_DIR = './config_templates/' # Directory to store JSON configuration templates
 METADATA_SHEET_NAME = "Metadata" # Name of the sheet containing max ID
-# --- MODIFICATION: Use separate constants for Max ID cells ---
+# Cell coordinates for Max IDs in Metadata sheet
 MAX_DN_ID_LABEL_CELL = "A1"
 MAX_DN_ID_VALUE_CELL = "B1"
 MAX_AG_ID_LABEL_CELL = "A2" # AG = Agent Group
 MAX_AG_ID_VALUE_CELL = "B2"
-# --- END MODIFICATION ---
 
 
 # Define the exact keys used when creating row data dicts in read_comparison_data.
 # These MUST match the headers read from the Excel AND the placeholders {row.KeyName} used in templates.
-SKILL_EXPR_ROW_KEYS = ["Concatenated Key", "Expression", "Ideal Expression", "ID", "Status"]
-STANDARD_ROW_KEYS = ["Item", "ID", "Status"]
+# Note: These are now less critical as headers are read dynamically, but kept for reference/potential validation
+SKILL_EXPR_ROW_KEYS_EXPECTED = ["Concatenated Key", "Expression", "Ideal Expression", "ID (from API)", "Status"]
+STANDARD_ROW_KEYS_EXPECTED = ["Item", "ID (from API)", "Status"] # Assuming 'Item' is the first column header
 
 
 # --- Logging Setup ---
@@ -84,15 +81,12 @@ for handler in logging.getLogger().handlers:
 # --- Flask App Initialization ---
 app = Flask(__name__)
 # Using app.config as a simple in-memory cache for the loaded Excel data.
-# In a larger application, consider Flask's 'g' object or a dedicated cache.
 app.config['EXCEL_DATA'] = {} # Cache for {'Sheet Name': [list_of_row_dicts]}
 app.config['EXCEL_FILENAME'] = None # Cache for the name of the loaded file
 app.config['COMPARISON_SHEETS'] = [] # Cache for the list of comparison sheet names found
-# --- MODIFICATION: Initialize separate Max ID keys ---
+app.config['SHEET_HEADERS'] = {} # Cache for {sheet_name: [header1, header2,...]}
 app.config['MAX_DN_ID'] = 0 # Cache for the Max DN ID read from Metadata sheet
 app.config['MAX_AG_ID'] = 0 # Cache for the Max AG ID read from Metadata sheet
-# --- END MODIFICATION ---
-
 
 # --- Register Blueprints ---
 # Register the routes defined in the imported blueprint files
@@ -109,7 +103,7 @@ else:
      logging.error("update_bp was not imported successfully. Update routes will be unavailable.")
 
 
-# --- HTML Template (Includes Simulation Review Modal) ---
+# --- HTML Template (Uses Dynamic Headers) ---
 # Main Jinja2 template for rendering the UI pages
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -219,90 +213,54 @@ HTML_TEMPLATE = """
                     {# Table - removed fixed layout for better auto-sizing #}
                     <table id="dataTable" class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
-                             {# --- Conditional Headers based on sheet type --- #}
-                            {% if current_comparison_type == skill_expr_sheet_name %}
-                                {# 5 Data Columns + 1 Checkbox Column for Skill Exprs #}
-                                <tr>
-                                    <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
-                                        <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
-                                               class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Key #}
-                                        <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Concatenated Key', order='desc' if sort_by == 'Concatenated Key' and sort_order == 'asc' else 'asc') }}">
-                                            Concatenated Key {% if sort_by == 'Concatenated Key' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
+                             {# --- Dynamic Headers --- #}
+                            <tr>
+                                <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
+                                    <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
+                                           class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                                </th>
+                                {# Loop through headers provided by the route #}
+                                {% for header in current_headers %}
+                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider {% if header == 'ID' or header == 'ID (from API)' %}whitespace-nowrap{% endif %}">
+                                        {# Create sort link using the header name #}
+                                        <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by=header, order='desc' if sort_by == header and sort_order == 'asc' else 'asc') }}">
+                                            {{ header }} {# Display header name #}
+                                            {# Show sort icon if this header is the current sort column #}
+                                            {% if sort_by == header %}
+                                                <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i>
+                                            {% endif %}
                                         </a>
                                     </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Expression #}
-                                        <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Expression', order='desc' if sort_by == 'Expression' and sort_order == 'asc' else 'asc') }}">
-                                            Expression {% if sort_by == 'Expression' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Ideal Expression #}
-                                        <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Ideal Expression', order='desc' if sort_by == 'Ideal Expression' and sort_order == 'asc' else 'asc') }}">
-                                            Ideal Expression {% if sort_by == 'Ideal Expression' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID #}
-                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='ID', order='desc' if sort_by == 'ID' and sort_order == 'asc' else 'asc') }}">
-                                            ID {% if sort_by == 'ID' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Status #}
-                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Status', order='desc' if sort_by == 'Status' and sort_order == 'asc' else 'asc') }}">
-                                            Status {% if sort_by == 'Status' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                </tr>
-                            {% else %}
-                                {# 3 Data Columns + 1 Checkbox Column for Others #}
-                                <tr>
-                                     <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
-                                        <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
-                                               class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Item #}
-                                        <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Item', order='desc' if sort_by == 'Item' and sort_order == 'asc' else 'asc') }}">
-                                            {# Use Header value from data if available, fallback to 'Item' #}
-                                            {{ page_data[0].get('Header', 'Item') if page_data else 'Item' }}
-                                            {% if sort_by == 'Item' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"> {# ID #}
-                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='ID', order='desc' if sort_by == 'ID' and sort_order == 'asc' else 'asc') }}">
-                                            ID (from API) {% if sort_by == 'ID' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"> {# Status #}
-                                         <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by='Status', order='desc' if sort_by == 'Status' and sort_order == 'asc' else 'asc') }}">
-                                            Status {% if sort_by == 'Status' %} <i data-lucide="{{ 'arrow-up' if sort_order == 'asc' else 'arrow-down' }}" class="sort-icon"></i> {% endif %}
-                                        </a>
-                                    </th>
-                                </tr>
-                            {% endif %}
+                                {% endfor %}
+                            </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             {% for row in page_data %}
-                                {# Determine the unique identifier for this row (used for checkbox value and data attribute) #}
-                                {% set row_id = row.get('Concatenated Key') if current_comparison_type == skill_expr_sheet_name else row.get('Item') %}
+                                {# --- Dynamic Row Identifier --- #}
+                                {# Use the value from the first header column as the unique ID for the checkbox/data attribute #}
+                                {% set first_header = current_headers[0] if current_headers else 'UNKNOWN' %}
+                                {% set row_id = row.get(first_header) %}
                                 <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id | default('', True) }}">
                                     {# Checkbox Cell #}
                                     <td class="px-4 py-3 text-center">
                                         <input type="checkbox" name="rowSelection" value="{{ row_id | default('', True) }}" onchange="handleRowSelectionChange()" class="row-checkbox h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                                     </td>
-                                    {# Conditional Data Cells #}
-                                    {% if current_comparison_type == skill_expr_sheet_name %}
-                                        {# 5 Data Columns for Skill Exprs #}
-                                        <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Concatenated Key', '') | default('', True) }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Expression', '') | default('', True) }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Ideal Expression', '') | default('', True) }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td> {# Prevent ID wrap #}
-                                        <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}"> {{ row.get('Status', '') | default('', True) }} </td>
-                                    {% else %}
-                                         {# 3 Data Columns for Others #}
-                                        <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Item', '') | default('', True) }}</td>
-                                        <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td> {# Prevent ID wrap #}
-                                        <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}"> {{ row.get('Status', '') | default('', True) }} </td>
-                                    {% endif %}
+                                    {# --- Dynamic Data Cells --- #}
+                                    {# Loop through headers again to display data for each column #}
+                                    {% for header in current_headers %}
+                                        {% set cell_value = row.get(header, '') | default('', True) %}
+                                        <td class="px-4 py-3 text-sm break-words
+                                            {# Apply specific styles based on header name #}
+                                            {% if header == 'ID' or header == 'ID (from API)' %}
+                                                text-gray-500 whitespace-nowrap {# Style ID column #}
+                                            {% elif header == 'Status' %}
+                                                font-medium {% if 'New' in cell_value %} text-green-600 {% elif 'Missing' in cell_value %} text-red-600 {% else %} text-gray-600 {% endif %} {# Style Status column #}
+                                            {% else %}
+                                                text-gray-900 {# Default style #}
+                                            {% endif %}">
+                                            {{ cell_value }}
+                                        </td>
+                                    {% endfor %}
                                 </tr>
                             {% endfor %}
                         </tbody>
@@ -315,22 +273,37 @@ HTML_TEMPLATE = """
                      <div class="flex items-center text-sm text-gray-700">
                          <label for="pageSize" class="mr-2">Show:</label>
                          <select id="pageSize" name="size" class="border border-gray-300 rounded-md text-sm p-1" onchange="handlePageSizeChange(this.value)">
-                             {% for size_option in page_size_options %} <option value="{{ size_option }}" {% if page_size_str == size_option|string %}selected{% endif %}>{{ size_option }}</option> {% endfor %}
+                             {% for size_option in page_size_options %}
+                                <option value="{{ size_option }}" {% if page_size_str == size_option|string %}selected{% endif %}>{{ size_option }}</option>
+                             {% endfor %}
                              <option value="all" {% if page_size_str == 'all' %}selected{% endif %}>All</option>
                          </select>
                          <span class="ml-2">results per page</span>
                      </div>
                      {# Right side: Pagination info and buttons #}
                      <div class="flex items-center">
-                         <p class="text-sm text-gray-700 mr-4 hidden md:block"> Showing <span class="font-medium">{{ pagination.start_item }}</span> to <span class="font-medium">{{ pagination.end_item }}</span> of <span class="font-medium">{{ pagination.total_items }}</span> results </p>
+                         <p class="text-sm text-gray-700 mr-4 hidden md:block">
+                             Showing <span class="font-medium">{{ pagination.start_item }}</span>
+                             to <span class="font-medium">{{ pagination.end_item }}</span>
+                             of <span class="font-medium">{{ pagination.total_items }}</span> results
+                         </p>
+                         {# Pagination buttons only shown if more than one page #}
                          {% if pagination.total_pages > 1 %}
                          <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
                               {# Previous Button #}
-                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}"> <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i> </a>
+                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}"
+                                 class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}">
+                                  <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i>
+                              </a>
                               {# Page Indicator #}
-                              <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex"> Page {{ pagination.page }} of {{ pagination.total_pages }} </span>
+                              <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex">
+                                Page {{ pagination.page }} of {{ pagination.total_pages }}
+                              </span>
                               {# Next Button #}
-                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}"> <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i> </a>
+                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}"
+                                 class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}">
+                                  <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i>
+                              </a>
                          </nav>
                          {% endif %}
                      </div>
@@ -348,12 +321,16 @@ HTML_TEMPLATE = """
           {# Modal Header #}
           <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
             <div class="sm:flex sm:items-start">
-              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10"> <i data-lucide="list-checks" class="h-6 w-6 text-blue-600"></i> </div>
+              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10">
+                <i data-lucide="list-checks" class="h-6 w-6 text-blue-600"></i>
+              </div>
               <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
                 <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">Review Generated Payloads</h3>
                 <div class="mt-2">
                    <p class="text-sm text-gray-600 mb-3">Review the JSON payloads that will be sent for update based on the selected template and rows. Errors encountered during generation are shown below.</p>
-                   <div id="simulationResultsArea" class="text-sm"> <p class="italic text-gray-500">Generating simulation...</p> </div>
+                   <div id="simulationResultsArea" class="text-sm">
+                       <p class="italic text-gray-500">Generating simulation...</p>
+                   </div>
                    <div id="simulationErrorsArea" class="mt-2 text-red-600 text-xs"></div>
                 </div>
               </div>
@@ -361,8 +338,14 @@ HTML_TEMPLATE = """
           </div>
           {# Modal Footer #}
           <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-            <button type="button" id="confirmUpdateButton" onclick="confirmUpdate()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50" disabled> Confirm Update </button>
-            <button type="button" onclick="cancelSimulation()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"> Cancel </button>
+            <button type="button" id="confirmUpdateButton" onclick="confirmUpdate()"
+                    class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50" disabled>
+              Confirm Update
+            </button>
+            <button type="button" onclick="cancelSimulation()"
+                    class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
+              Cancel
+            </button>
           </div>
         </div>
       </div>
@@ -375,9 +358,14 @@ HTML_TEMPLATE = """
         <span id="actionBarMessage" class="text-sm font-medium">Select rows to apply configuration.</span>
         <div class="flex items-center space-x-4">
              <label for="templateSelect" class="text-sm">Apply Template:</label>
-             <select id="templateSelect" name="template" class="text-black border border-gray-300 rounded-md text-sm p-1.5 min-w-[150px]"> <option value="">Loading templates...</option> </select>
+             <select id="templateSelect" name="template" class="text-black border border-gray-300 rounded-md text-sm p-1.5 min-w-[150px]">
+                 <option value="">Loading templates...</option>
+             </select>
              {# Button now triggers simulation first #}
-             <button id="simulateButton" onclick="simulateConfiguration()" disabled class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed"> Simulate Update </button>
+             <button id="simulateButton" onclick="simulateConfiguration()" disabled
+                     class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                 Simulate Update
+             </button>
         </div>
     </div>
 
@@ -511,6 +499,7 @@ HTML_TEMPLATE = """
       async function simulateConfiguration() {
             const selectedTemplate = templateSelect.value;
             const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
+            // Get the unique identifier (Item or Concatenated Key) stored in the 'value' attribute
             const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id);
 
             if (!selectedTemplate || selectedIds.length === 0) {
@@ -531,7 +520,7 @@ HTML_TEMPLATE = """
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         templateName: selectedTemplate,
-                        selectedRowsData: selectedIds
+                        selectedRowsData: selectedIds // Send identifiers
                     })
                 });
                 const result = await response.json();
@@ -539,23 +528,27 @@ HTML_TEMPLATE = """
 
                 if (response.ok && result.payloads) {
                     simulatedPayloads = result.payloads;
+                    // Display generated payloads nicely formatted
                     simulationResultsArea.innerHTML = `<pre class="json-preview">${JSON.stringify(simulatedPayloads, null, 2)}</pre>`;
-                    confirmUpdateButton.disabled = false;
+                    confirmUpdateButton.disabled = false; // Enable confirm button
+                    // Display any simulation warnings/errors
                     if (result.errors && result.errors.length > 0) {
                         simulationErrorsArea.textContent = `Simulation Warnings/Errors: ${result.errors.join('; ')}`;
                     }
                     if (result.message) {
-                        console.log("Simulation status:", result.message);
+                        console.log("Simulation status:", result.message); // Log status message
                     }
-                    simulationModal.classList.remove('hidden'); // Show modal
+                    simulationModal.classList.remove('hidden'); // Show the modal
                 } else {
+                    // Throw error if simulation failed
                     throw new Error(result.error || `Simulation request failed with status ${response.status}`);
                 }
             } catch (error) {
                 console.error('Error during simulation:', error);
                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"> <strong class="font-bold">Simulation Error:</strong> ${error.message}. Check server logs (${LOG_FILE_UI}). </div>`;
-                simulatedPayloads = [];
+                simulatedPayloads = []; // Clear any potentially stored payloads
             } finally {
+                 // Re-enable simulate button based on current selection state
                  simulateButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
                  simulateButton.textContent = 'Simulate Update';
             }
@@ -563,45 +556,57 @@ HTML_TEMPLATE = """
 
       // 2. Confirm Update
       async function confirmUpdate() {
+            // Check if there are payloads stored from the simulation step
             if (!simulatedPayloads || simulatedPayloads.length === 0) {
                 alert("No simulation data available to confirm.");
-                cancelSimulation();
+                cancelSimulation(); // Close modal if no data
                 return;
             }
 
-            confirmUpdateButton.disabled = true;
-            confirmUpdateButton.textContent = 'Updating...';
+            // --- UI Feedback: Start Confirmation ---
+            confirmUpdateButton.disabled = true; // Disable confirm button
+            confirmUpdateButton.textContent = 'Updating...'; // Change button text
+            // Display message in the main page area
             generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Confirming update (simulation)...</div>`;
-            simulationModal.classList.add('hidden'); // Hide modal
+            simulationModal.classList.add('hidden'); // Hide the review modal
 
             try {
+                 // --- API Call to Confirmation Endpoint ---
                 const response = await fetch('{{ url_for("updates.confirm_update") }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ payloads: simulatedPayloads })
+                    body: JSON.stringify({ payloads: simulatedPayloads }) // Send the stored payloads
                 });
-                const result = await response.json();
 
-                if (response.ok) {
+                const result = await response.json(); // Expect {message, status, errors?}
+
+                 // --- UI Feedback: Display Confirmation Result ---
+                if (response.ok) { // Status 200-299 indicates success or partial success
                      let messageClass = 'bg-green-100 border-green-300 text-green-700';
                      let title = 'Update Confirmed';
+                     // Check for specific status codes or messages indicating partial success/warnings
                      if (response.status === 207 || (result.status && result.status.toLowerCase().includes('partial'))) {
                          messageClass = 'bg-yellow-100 border-yellow-300 text-yellow-700';
                          title = 'Update Partially Confirmed / Warnings';
                      }
+                     // Display success/warning message in the main message area
                      generalMessageArea.innerHTML = `<div class="${messageClass} px-4 py-3 rounded relative border" role="alert"> <strong class="font-bold">${title}:</strong> ${result.message || 'Update confirmed (simulation complete).'} ${result.errors ? `<br><span class='text-xs'>Errors: ${result.errors.join('; ')}</span>` : ''} </div>`;
-                     toggleSelectAll(false); // Clear selection on success
+                     toggleSelectAll(false); // Clear row selection on success
                 } else {
+                    // Handle application-level errors reported by the backend
                     throw new Error(result.error || `Confirmation failed with status ${response.status}`);
                 }
+
             } catch (error) {
+                 // Handle network errors or errors parsing the response
                  console.error('Error confirming update:', error);
                  generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"> <strong class="font-bold">Confirmation Error:</strong> ${error.message}. Check server logs (${LOG_FILE_UI}). </div>`;
             } finally {
-                 confirmUpdateButton.disabled = false;
+                 // --- UI Feedback: End Confirmation ---
+                 confirmUpdateButton.disabled = false; // Re-enable confirm button (though modal is hidden)
                  confirmUpdateButton.textContent = 'Confirm Update';
-                 simulatedPayloads = []; // Clear stored payloads
-                 updateSelectionCount(); // Update action bar state
+                 simulatedPayloads = []; // Clear stored payloads after attempt
+                 updateSelectionCount(); // Update action bar state (likely becomes hidden)
             }
       }
 
@@ -627,24 +632,26 @@ def find_latest_processed_file() -> Optional[str]:
         list_of_files = glob.glob('*_processed.xlsx')
         if not list_of_files:
             return None
+        # Find the file with the latest modification time
         latest_file = max(list_of_files, key=os.path.getmtime)
         return latest_file
     except Exception as e:
         logging.error(f"Error finding latest processed file: {e}", exc_info=True)
         return None
 
-# read_comparison_data (MODIFIED to read MAX_IDs from Metadata)
+# read_comparison_data (MODIFIED to read separate MAX_IDs and use dynamic headers)
 def read_comparison_data(filename: str) -> bool:
     """
     Reads data from '* Comparison' sheets into app config cache.
-    Handles 5 columns specifically for Skill_exprs Comparison.
-    Reads the maximum numeric IDs from the 'Metadata' sheet.
+    Uses headers from sheet as keys for row data dictionaries.
+    Reads the maximum numeric IDs (DN and AG) from the 'Metadata' sheet.
     Returns True on success, False on failure.
     """
     global app # Needed to modify app.config
     comparison_data = {}
     workbook = None
     comparison_sheet_names = []
+    sheet_headers_cache = {} # Store headers read from each sheet
     max_dn_id_from_metadata = 0 # Initialize max IDs read from file
     max_ag_id_from_metadata = 0
 
@@ -674,7 +681,7 @@ def read_comparison_data(filename: str) -> bool:
                      logging.warning(f"Value in '{METADATA_SHEET_NAME}' cell {MAX_AG_ID_VALUE_CELL} is not a valid number: '{ag_id_val}'. Using 0.")
 
             except Exception as meta_e:
-                logging.error(f"Error reading Max IDs from '{METADATA_SHEET_NAME}' sheet: {meta_e}. Using 0.")
+                logging.error(f"Error reading Max IDs from '{METADATA_SHEET_NAME}' sheet: {meta_e}. Using 0 for both.")
         else:
             logging.warning(f"'{METADATA_SHEET_NAME}' sheet not found in workbook. Max IDs will be 0.")
 
@@ -694,6 +701,7 @@ def read_comparison_data(filename: str) -> bool:
             app.config['EXCEL_DATA'] = {}
             app.config['COMPARISON_SHEETS'] = []
             app.config['EXCEL_FILENAME'] = filename
+            app.config['SHEET_HEADERS'] = {}
             # MAX_IDs are already set from Metadata sheet check above
             return True
 
@@ -704,46 +712,38 @@ def read_comparison_data(filename: str) -> bool:
             try:
                 # Read the header row (expected to be row 1)
                 headers = [cell.value for cell in sheet[1]]
+                # Filter out None headers, ensure they are strings and stripped
+                headers = [str(h).strip() for h in headers if h is not None]
+                if not headers:
+                    raise IndexError("No valid headers found in row 1.")
+                sheet_headers_cache[sheet_name] = headers # Cache headers for this sheet
             except IndexError:
                  # Handle case where sheet might be completely empty or has no header
                  logging.warning(f"Sheet '{sheet_name}' seems empty or has no header row. Skipping.")
                  continue # Skip this sheet
 
-            # Determine expected columns and keys based on sheet name
-            is_skill_expr_sheet = (sheet_name == SKILL_EXPR_SHEET_NAME)
-            if is_skill_expr_sheet:
-                expected_keys = SKILL_EXPR_ROW_KEYS
-                max_cols = len(expected_keys)
-                # Use first header as display header, fallback if empty
-                item_header_display = headers[0] if headers and headers[0] else "Concatenated Key"
-            else:
-                expected_keys = STANDARD_ROW_KEYS
-                max_cols = len(expected_keys)
-                item_header_display = headers[0] if headers and headers[0] else "Item"
-
-            # Check if header count matches expected columns
-            if len(headers) < max_cols:
-                 logging.warning(f"Sheet '{sheet_name}' has fewer headers ({len(headers)}) than expected ({max_cols}). Skipping.")
-                 continue
-
             # Read data rows (starting from row 2)
+            # Use the length of actual headers read to determine max columns to read
+            max_cols = len(headers)
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2, max_col=max_cols), start=2):
                 row_values = [cell.value for cell in row]
                 # Only add row if the first cell (Key/Item) has a value
                 if row_values and row_values[0] is not None and str(row_values[0]).strip() != "":
-                    # Create dict using expected_keys
-                    row_data = {expected_keys[i]: row_values[i] if i < len(row_values) else None for i in range(max_cols)}
-                    row_data['Header'] = item_header_display # Store display header for UI
+                    # Create dict using the actual headers read as keys
+                    row_data = {headers[i]: row_values[i] if i < len(row_values) else None for i in range(max_cols)}
+                    # Add the 'Header' key for display purposes in the template (using the first actual header)
+                    row_data['Header'] = headers[0]
                     data.append(row_data)
                     # Note: Max ID calculation is now done from Metadata sheet, not here.
 
             comparison_data[sheet_name] = data # Store data for this sheet
-            logging.info(f"Read {len(data)} valid rows from sheet '{sheet_name}'.")
+            logging.info(f"Read {len(data)} valid rows from sheet '{sheet_name}'. Headers used as keys: {headers}")
 
         # --- Store results in app config ---
         app.config['EXCEL_DATA'] = comparison_data
         app.config['COMPARISON_SHEETS'] = comparison_sheet_names
         app.config['EXCEL_FILENAME'] = filename
+        app.config['SHEET_HEADERS'] = sheet_headers_cache # Store the read headers
         # MAX_IDs were already stored earlier from Metadata sheet
         # --- End Store results ---
 
@@ -751,16 +751,31 @@ def read_comparison_data(filename: str) -> bool:
 
     except FileNotFoundError:
         logging.error(f"Excel file not found: {filename}")
-        app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; app.config['MAX_DN_ID'] = 0; app.config['MAX_AG_ID'] = 0
+        app.config['EXCEL_DATA'] = {}
+        app.config['COMPARISON_SHEETS'] = []
+        app.config['EXCEL_FILENAME'] = filename
+        app.config['MAX_DN_ID'] = 0
+        app.config['MAX_AG_ID'] = 0
+        app.config['SHEET_HEADERS'] = {}
         return False # Indicate failure
     except InvalidFileException:
         logging.error(f"Invalid Excel file format or corrupted file: {filename}")
-        app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; app.config['MAX_DN_ID'] = 0; app.config['MAX_AG_ID'] = 0
+        app.config['EXCEL_DATA'] = {}
+        app.config['COMPARISON_SHEETS'] = []
+        app.config['EXCEL_FILENAME'] = filename
+        app.config['MAX_DN_ID'] = 0
+        app.config['MAX_AG_ID'] = 0
+        app.config['SHEET_HEADERS'] = {}
         return False # Indicate failure
     except Exception as e:
         # Catch-all for other errors during file processing
         logging.error(f"Error reading Excel file '{filename}': {e}", exc_info=True)
-        app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; app.config['MAX_DN_ID'] = 0; app.config['MAX_AG_ID'] = 0
+        app.config['EXCEL_DATA'] = {}
+        app.config['COMPARISON_SHEETS'] = []
+        app.config['EXCEL_FILENAME'] = filename
+        app.config['MAX_DN_ID'] = 0
+        app.config['MAX_AG_ID'] = 0
+        app.config['SHEET_HEADERS'] = {}
         return False # Indicate failure
     finally:
         # Ensure workbook is closed to release resources
@@ -810,6 +825,7 @@ def index():
         return render_template_string(
             HTML_TEMPLATE, title="Error", comparison_data={}, page_data=[], pagination=None,
             filename=filename or "N/A", available_sheets=[], current_comparison_type=None,
+            current_headers=[], # Pass empty list for headers on error
             sort_by=None, sort_order=None, page_size_str='N/A', page_size_options=PAGE_SIZE_OPTIONS,
             comparison_suffix=COMPARISON_SUFFIX, error=error, skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME
         )
@@ -823,13 +839,14 @@ def index():
         return render_template_string(
             HTML_TEMPLATE, title="No Data", comparison_data={}, page_data=[], pagination=None,
             filename=filename or "N/A", available_sheets=[], current_comparison_type=None,
+            current_headers=[], # Pass empty list for headers
             sort_by=None, sort_order=None, page_size_str='N/A', page_size_options=PAGE_SIZE_OPTIONS,
             comparison_suffix=COMPARISON_SUFFIX, error="No comparison sheets found in the Excel file.",
             skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME
         )
 
 
-# view_comparison (Corrected sort_key definition)
+# view_comparison (MODIFIED to use dynamic headers)
 @app.route('/view/<comparison_type>')
 def view_comparison(comparison_type):
     """Displays a specific comparison type with pagination and sorting."""
@@ -840,20 +857,27 @@ def view_comparison(comparison_type):
 
     all_data = app.config.get('EXCEL_DATA', {})
     available_sheets = app.config.get('COMPARISON_SHEETS', [])
+    sheet_headers_map = app.config.get('SHEET_HEADERS', {}) # Get cached headers
 
-    # Check if the requested comparison type exists in the loaded data
-    if comparison_type not in all_data:
-        logging.warning(f"Invalid comparison type requested: '{comparison_type}'. Redirecting to index.")
+    # Check if the requested comparison type exists in the loaded data and headers cache
+    if comparison_type not in all_data or comparison_type not in sheet_headers_map:
+        logging.warning(f"Invalid comparison type requested or headers missing: '{comparison_type}'. Redirecting to index.")
+        # Add error message to flash or session if desired
         return redirect(url_for('index'))
+
+    # --- Get Headers for current sheet ---
+    current_headers = sheet_headers_map.get(comparison_type, [])
+    if not current_headers:
+         logging.error(f"Headers not found for sheet: {comparison_type}. Cannot render table.")
+         # Redirect or show error
+         return redirect(url_for('index')) # Or render template with specific error
 
     # --- Get parameters from URL query string ---
     try:
         page = request.args.get('page', 1, type=int)
-        # Get size as string first to handle 'all'
         page_size_str = request.args.get('size', str(DEFAULT_PAGE_SIZE), type=str).lower()
-        # Determine default sort column based on sheet type
-        is_skill_expr_sheet = (comparison_type == SKILL_EXPR_SHEET_NAME)
-        default_sort_col = 'Concatenated Key' if is_skill_expr_sheet else 'Item'
+        # Default sort column is the first header read from the sheet
+        default_sort_col = current_headers[0]
         sort_by = request.args.get('sort_by', default_sort_col, type=str)
         sort_order = request.args.get('order', 'asc', type=str).lower()
     except ValueError:
@@ -861,8 +885,7 @@ def view_comparison(comparison_type):
         logging.warning("Invalid query parameter type received, using defaults.")
         page = 1
         page_size_str = str(DEFAULT_PAGE_SIZE)
-        is_skill_expr_sheet = (comparison_type == SKILL_EXPR_SHEET_NAME) # Recalculate here
-        default_sort_col = 'Concatenated Key' if is_skill_expr_sheet else 'Item'
+        default_sort_col = current_headers[0] # Recalculate default
         sort_by = default_sort_col
         sort_order = 'asc'
 
@@ -873,12 +896,9 @@ def view_comparison(comparison_type):
     if sort_order not in ['asc', 'desc']:
         sort_order = 'asc' # Default to ascending
 
-    # Define valid sort columns based on the sheet type being viewed
-    if is_skill_expr_sheet:
-        valid_sort_columns = SKILL_EXPR_ROW_KEYS # Use keys defined earlier
-    else:
-        valid_sort_columns = STANDARD_ROW_KEYS
-    # If requested sort_by is invalid, revert to default for this sheet type
+    # Use the actual headers read from the sheet as valid sort columns
+    valid_sort_columns = current_headers
+    # If requested sort_by is invalid, revert to default (first header)
     if sort_by not in valid_sort_columns:
         sort_by = default_sort_col
 
@@ -898,113 +918,95 @@ def view_comparison(comparison_type):
             # page_size already holds DEFAULT_PAGE_SIZE
 
     # --- Get data for the current type ---
-    current_data = all_data.get(comparison_type, [])
-    total_items = len(current_data)
+    current_sheet_data = all_data.get(comparison_type, [])
+    total_items = len(current_sheet_data)
 
     # --- Sorting ---
     logging.debug(f"Sorting '{comparison_type}' data by '{sort_by}' ({sort_order})")
     reverse_sort = (sort_order == 'desc')
 
-    # --- CORRECTED sort_key function definition ---
+    # Sort key function uses the 'sort_by' which now matches the actual dict keys (headers)
     def sort_key(item):
         """Generate a sort key for Python's sort, handling None and basic types."""
         value = item.get(sort_by) # Get the value for the column we're sorting by
 
-        # Handle None values consistently
         if value is None:
             # Place None at the end when ascending, beginning when descending
-            # Using tuples for sort precedence: (group, value)
             return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
-
-        # Attempt type-specific comparison, falling back to string
         try:
-            if sort_by == 'ID': # Special handling for ID column
+            # Try numeric sort for 'ID' column (or similar) if possible
+            # Check header name case-insensitively for flexibility
+            if sort_by.upper() == 'ID' or sort_by.upper() == 'ID (FROM API)':
                 try:
-                    # Try to treat as number first for numeric sorting
-                    return (0, float(value)) # Group numbers first
+                    return (0, float(value))
                 except (ValueError, TypeError):
-                     # Treat non-numeric IDs as strings, group after numbers
-                    return (1, str(value).lower())
-            # Default: Case-insensitive string sort for all other columns
+                    return (1, str(value).lower()) # Fallback string sort for non-numeric IDs
+            # Default: Case-insensitive string sort
             return (0, str(value).lower())
         except Exception as e:
-            # Fallback for any unexpected error during value processing
             logging.warning(f"Could not process value '{value}' for sorting by '{sort_by}': {e}")
-             # Group these problematic values last
-            return (2, str(value).lower())
-    # --- End of corrected sort_key function ---
+            return (2, str(value).lower()) # Fallback group
 
     # Perform the sort
     try:
-        sorted_data = sorted(current_data, key=sort_key, reverse=reverse_sort)
+        sorted_data = sorted(current_sheet_data, key=sort_key, reverse=reverse_sort)
     except Exception as sort_e:
         # Handle potential errors during sorting (e.g., complex type issues)
         logging.error(f"Error during sorting data for '{comparison_type}': {sort_e}", exc_info=True)
         error = f"Error sorting data by {sort_by}. Displaying unsorted." # Inform user via error var
-        sorted_data = current_data # Fallback to unsorted data
+        sorted_data = current_sheet_data # Fallback to unsorted data
 
     # --- Pagination ---
-    # Calculate pagination details based on sorted data and page size
     if show_all:
-        # If showing all, set page to 1, one total page, and use all sorted data
         page = 1
         total_pages = 1 if total_items > 0 else 0
         start_index = 0
         end_index = total_items
         page_data = sorted_data
     elif total_items > 0:
-        # Calculate total pages needed
         total_pages = math.ceil(total_items / page_size)
-        # Adjust current page if it exceeds total pages
-        page = min(page, total_pages)
-        # Calculate start and end index for slicing
+        page = min(page, total_pages) # Ensure page is not out of bounds
         start_index = (page - 1) * page_size
         end_index = start_index + page_size
-        # Get the slice of data for the current page
         page_data = sorted_data[start_index:end_index]
     else:
-        # Handle case where there are no items
         total_pages = 0
         start_index = 0
         end_index = 0
         page_data = []
 
-    # Create pagination info dictionary for the template
+    # Create pagination info dictionary
     pagination_info = {
-        'page': page,
-        'total_pages': total_pages,
-        'total_items': total_items,
-        'has_prev': page > 1 and not show_all, # Previous link only if not on page 1 and not showing all
-        'prev_num': page - 1,
-        'has_next': page < total_pages and not show_all, # Next link only if not on last page and not showing all
-        'next_num': page + 1,
-        'start_item': min(start_index + 1, total_items) if total_items > 0 else 0, # Displayed item range start (1-based)
-        'end_item': min(end_index, total_items) # Displayed item range end
+        'page': page, 'total_pages': total_pages, 'total_items': total_items,
+        'has_prev': page > 1 and not show_all, 'prev_num': page - 1,
+        'has_next': page < total_pages and not show_all, 'next_num': page + 1,
+        'start_item': min(start_index + 1, total_items) if total_items > 0 else 0,
+        'end_item': min(end_index, total_items)
     }
     logging.debug(f"Pagination for '{comparison_type}': Page {page}/{total_pages}, Size='{page_size_str}', Items {pagination_info['start_item']}-{pagination_info['end_item']} of {total_items}")
 
     # --- Render Template ---
-    # Pass all necessary data to the Jinja2 template
     return render_template_string(
         HTML_TEMPLATE,
-        title=comparison_type.replace(COMPARISON_SUFFIX, ''), # Cleaner title for the page tab
-        comparison_data=all_data, # Pass all loaded data (might be useful for future features)
-        page_data=page_data,      # Pass only the data for the current page to display in the table
-        pagination=pagination_info, # Pass pagination details for controls
-        filename=filename, # Pass the source Excel filename
-        available_sheets=available_sheets, # Pass list of sheet names for navigation tabs
-        current_comparison_type=comparison_type, # Pass the currently viewed sheet name
-        sort_by=sort_by, # Pass current sort column
-        sort_order=sort_order, # Pass current sort order
-        page_size_str=page_size_str, # Pass page size selection (string 'all' or number)
-        page_size_options=PAGE_SIZE_OPTIONS, # Pass numeric page size options for dropdown
-        comparison_suffix=COMPARISON_SUFFIX, # Pass suffix constant if needed in template
-        skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME, # Pass constant for conditional rendering
-        error=error # Pass any error message encountered during processing
+        title=comparison_type.replace(COMPARISON_SUFFIX, ''),
+        comparison_data=all_data,
+        page_data=page_data,
+        pagination=pagination_info,
+        filename=filename,
+        available_sheets=available_sheets,
+        current_comparison_type=comparison_type,
+        current_headers=current_headers, # Pass the actual headers for this sheet
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page_size_str=page_size_str,
+        page_size_options=PAGE_SIZE_OPTIONS,
+        comparison_suffix=COMPARISON_SUFFIX,
+        skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME, # Pass constant for conditional rendering in template
+        error=error
     )
 
 
-# refresh_data (no changes)
+# refresh_data (Reset MAX IDs and Headers)
 @app.route('/refresh')
 def refresh_data():
     """Clears the cached Excel data and reloads it, then redirects to index."""
@@ -1013,17 +1015,17 @@ def refresh_data():
     app.config['EXCEL_DATA'] = {}
     app.config['EXCEL_FILENAME'] = None
     app.config['COMPARISON_SHEETS'] = []
-    # --- MODIFICATION: Reset both Max IDs ---
+    app.config['SHEET_HEADERS'] = {} # Clear headers cache
+    # Reset max IDs
     app.config['MAX_DN_ID'] = 0
     app.config['MAX_AG_ID'] = 0
-    # --- END MODIFICATION ---
     # Redirect to the index page, which will trigger the data loading process again
     return redirect(url_for('index'))
 
 
 # --- Main Execution Block ---
 if __name__ == '__main__':
-    # This block runs only when the script is executed directly (e.g., python ui_viewer.py)
+    # This block runs only when the script is executed directly
     logging.info("Starting Flask Comparison Results Viewer...")
     print("Starting UI Viewer...")
     print(f"Log file: {LOG_FILE_UI}")
@@ -1035,39 +1037,30 @@ if __name__ == '__main__':
             logging.info(f"Created missing template directory: {TEMPLATE_DIR}")
             print(f"Created template directory: {TEMPLATE_DIR}")
         except OSError as e:
-            # Log and print error if directory creation fails
             logging.error(f"Could not create template directory {TEMPLATE_DIR}: {e}")
             print(f"ERROR: Could not create template directory {TEMPLATE_DIR}. Please create it manually.")
-            # Consider exiting if this directory is critical
-            # sys.exit(1)
+            # sys.exit(1) # Exit if directory is critical
 
     # Attempt to load data initially before starting the server
     print("Attempting to find and load the latest '*_processed.xlsx' file...")
     _, initial_error = get_comparison_data_or_reload()
     if initial_error:
-        # Inform user if initial data load failed, but still start the server
         print(f"Initial data load failed: {initial_error}")
         print("The application will start, but data may be unavailable until refreshed or the file is fixed.")
 
     # Start the Flask development server
     try:
         print(f"\nViewer running. Open your web browser and go to http://127.0.0.1:5001\n")
-        # Run the app on localhost, port 5001
-        # debug=False is recommended for stability, set to True for development debugging (enables auto-reload)
-        # threaded=True allows handling multiple requests concurrently (useful for JS fetches)
         app.run(host='127.0.0.1', port=5001, debug=False, threaded=True)
     except OSError as e:
-        # Handle common error: port already in use
         if "address already in use" in str(e).lower():
              err_msg = "Port 5001 is already in use. Please close other applications using this port or modify the port number in ui_viewer.py."
              logging.error(err_msg)
              print(f"ERROR: {err_msg}")
         else:
-             # Handle other OS errors during server start
              logging.error(f"Failed to start Flask server: {e}", exc_info=True)
              print(f"ERROR: Failed to start web server. See {LOG_FILE_UI} for details.")
     except Exception as e:
-        # Catch any other unexpected errors during startup
         logging.error(f"An unexpected error occurred on startup: {e}", exc_info=True)
         print(f"FATAL: An unexpected error occurred. See {LOG_FILE_UI} for details.")
 

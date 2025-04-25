@@ -19,65 +19,114 @@ TEMPLATE_DIR = './config_templates/'
 LOG_FILE_UI = 'ui_viewer.log'
 
 # --- Logging ---
+# Use the root logger configured in the main app (ui_viewer.py)
 logger = logging.getLogger()
 
 # --- Blueprint Definition ---
+# Create a Blueprint named 'templates'. The main app (ui_viewer.py) will register this.
 template_bp = Blueprint('templates', __name__, template_folder=None)
 
 # --- Helper Function: Placeholder Replacement ---
-# (No changes needed in this function from previous version)
+# This function is part of the template blueprint as it defines how templates are interpreted.
 def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id: Optional[int] = None) -> Any:
     """
     Recursively traverses a template structure (dict, list, or string)
     and replaces placeholders with values from row_data or the pre-generated ID.
+
+    Supported Placeholders:
+    - {row.ColumnName}: Replaced with the value from the corresponding column in row_data.
+                        Lookup is case-insensitive for the ColumnName part.
+    - {func.next_id}: Replaced with the current_row_next_id value.
+
+    Also handles simple string concatenation like "prefix:{row.ColumnName}".
+
+    Args:
+        template_data: The template structure (can be dict, list, string, etc.).
+        row_data: The dictionary containing data for the current row (keys are actual headers).
+        current_row_next_id: The pre-generated sequential ID for the current row.
+
+    Returns:
+        The template structure with placeholders replaced.
     """
+    # Regex to find placeholders like {row.ColumnName} or {func.FunctionName}
+    # It captures the type (row/func) and name
     placeholder_pattern = re.compile(r'{(\w+)\.([^}]+)}') # Captures type (row/func) and name
 
+    # --- Inner replacement function ---
     def perform_replace(text: str) -> str:
         """Performs replacements on a single string."""
+        # Check if input is actually a string
         if not isinstance(text, str):
-            return text
+            return text # Return non-strings as is
 
+        # Function to handle each match found by the regex
         def replace_match(match):
-            placeholder_type = match.group(1).lower()
-            placeholder_name = match.group(2).strip()
+            placeholder_type = match.group(1).lower() # 'row' or 'func'
+            placeholder_name = match.group(2).strip() # 'ColumnName' or 'next_id'
 
             if placeholder_type == 'row':
-                replacement = row_data.get(placeholder_name, "")
-                return str(replacement)
+                # --- MODIFICATION START: Case-insensitive lookup ---
+                # Find the matching key in row_data ignoring case
+                found_key = None
+                for key in row_data.keys():
+                    if key.lower() == placeholder_name.lower():
+                        found_key = key
+                        break
+
+                if found_key:
+                    replacement = row_data.get(found_key, "") # Use the actual key found
+                else:
+                    replacement = "" # Default to empty if no matching key found
+                    logger.warning(f"Placeholder {{row.{placeholder_name}}} not found in row data keys: {list(row_data.keys())}")
+                # --- MODIFICATION END ---
+                return str(replacement) # Ensure replacement is a string
+
             elif placeholder_type == 'func':
+                # Handle the {func.next_id} placeholder
                 if placeholder_name == 'next_id':
                     if current_row_next_id is not None:
+                        # Use the ID pre-generated for this specific row
                         return str(current_row_next_id)
                     else:
+                        # Log a warning if the placeholder is used but no ID was provided
                         logger.warning(f"Placeholder {{func.next_id}} used but no ID provided for this row.")
-                        return "{ERROR:next_id_missing}"
+                        return "{ERROR:next_id_missing}" # Indicate error in output
                 else:
+                    # Handle unknown function placeholders
                     logger.warning(f"Unknown function placeholder: {match.group(0)}")
-                    return match.group(0)
+                    return match.group(0) # Return the unknown placeholder itself
             else:
+                 # Handle unknown placeholder types (neither row nor func)
                  logger.warning(f"Unknown placeholder type in template: {match.group(0)}")
-                 return match.group(0)
+                 return match.group(0) # Return the placeholder itself
 
+        # Use re.sub with the handler function to replace all occurrences in the string
         return placeholder_pattern.sub(replace_match, text)
+    # --- End of inner replacement function ---
 
+    # --- Main logic for traversing template data ---
+    # Process strings using the inner function
     if isinstance(template_data, str):
         return perform_replace(template_data)
+    # Recursively process dictionaries
     elif isinstance(template_data, dict):
         return {
             key: replace_placeholders(value, row_data, current_row_next_id)
             for key, value in template_data.items()
         }
+    # Recursively process lists
     elif isinstance(template_data, list):
         return [
             replace_placeholders(item, row_data, current_row_next_id)
             for item in template_data
         ]
+    # Return numbers, booleans, None, etc., directly without modification
     else:
         return template_data
 
 
 # --- HTML Template for Template Manager (Updated Examples & Help Text) ---
+# This HTML structure defines the UI for the '/templates' page.
 TEMPLATE_MANAGER_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -85,12 +134,14 @@ TEMPLATE_MANAGER_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Configuration Templates</title>
+    {# Load Tailwind CSS via CDN for styling #}
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    {# Load Lucide icons library #}
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
      <style>
-        /* Basic styling */
+        /* Basic styling for elements */
         .json-display { background-color: #f3f4f6; border: 1px solid #d1d5db; padding: 1rem; border-radius: 0.375rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 0.875rem; }
-        textarea { font-family: monospace; font-size: 0.875rem; min-height: 300px; }
+        textarea { font-family: monospace; font-size: 0.875rem; min-height: 300px; } /* Increased height */
         code { background-color: #e5e7eb; padding: 0.1em 0.3em; border-radius: 0.25em; font-size: 0.9em; }
         .help-text ul { margin-top: 0.25rem; }
         .help-text li { margin-bottom: 0.25rem;}
@@ -129,7 +180,7 @@ TEMPLATE_MANAGER_HTML = """
                     <label for="templateContent" class="block text-sm font-medium text-gray-700 mb-1">Template JSON Structure:</label>
                     {# --- MODIFICATION START: Updated placeholder example --- #}
                     <textarea id="templateContent" rows="15"
-                        placeholder='{\n  "staticExample": "This is a fixed value",\n  "entityType": "agentGroup",\n  "vqName": "{row.Item}", \n  "skillExprKey": "{row.Concatenated Key}",\n  "combinedExample": "AG_{row.ID}_Suffix",\n  "needsReview": true,\n  "newIdExample": "{func.next_id}",\n  "details": {\n    "expression": "{row.Expression}",\n    "ideal": "{row.Ideal Expression}",\n    "statusFromSheet": "{row.Status}"\n  }\n}'
+                        placeholder='{\n  "staticExample": "This is a fixed value",\n  "entityType": "agentGroup",\n  "vqName": "{row.Vqs}", \n  "skillExprKey": "{row.Concatenated Key}",\n  "combinedExample": "AG_{row.ID (from API)}_Suffix",\n  "needsReview": true,\n  "newIdExample": "{func.next_id}",\n  "details": {\n    "expression": "{row.Expression}",\n    "ideal": "{row.Ideal Expression}",\n    "statusFromSheet": "{row.Status}"\n  }\n}'
                         class="w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
                     {# --- MODIFICATION END --- #}
 
@@ -139,14 +190,11 @@ TEMPLATE_MANAGER_HTML = """
                         <p><strong>Value Types:</strong></p>
                         <ul class="list-disc list-inside ml-2">
                             <li><strong>Static:</strong> Enter plain text, numbers, or booleans (e.g., <code>"active": true</code>).</li>
-                            <li><strong>Row Data:</strong> Use <code>{row.ColumnName}</code>. The <code>ColumnName</code> must exactly match a key in the data read from the comparison sheet row.
-                                <ul class="list-circle list-inside ml-4">
-                                     <li>For VQs, Skills, VAGs sheets: <code>{row.Item}</code>, <code>{row.ID}</code>, <code>{row.Status}</code></li>
-                                     <li>For Skill Exprs sheet: <code>{row.Concatenated Key}</code>, <code>{row.Expression}</code>, <code>{row.Ideal Expression}</code>, <code>{row.ID}</code>, <code>{row.Status}</code></li>
-                                </ul>
+                            <li><strong>Row Data:</strong> Use <code>{row.ColumnName}</code>. The <code>ColumnName</code> must match the actual column header from the specific Comparison Sheet you are applying the template to (case-insensitive).
+                                <br><em>Examples:</em> <code>{row.Vqs}</code>, <code>{row.Skills}</code>, <code>{row.Vags}</code>, <code>{row.Concatenated Key}</code>, <code>{row.Expression}</code>, <code>{row.Ideal Expression}</code>, <code>{row.ID (from API)}</code>, <code>{row.Status}</code>.
                             </li>
-                            <li><strong>Combined:</strong> Mix static text and row data (e.g., <code>"AG_{row.ID}"</code>, <code>"Prefix:{row.Item}"</code>).</li>
-                            <li><strong>Function (Next ID):</strong> Use <code>{func.next_id}</code> to insert the next available sequential ID for the current row being processed. The same ID is used for all <code>{func.next_id}</code> placeholders within a single row's template application. The starting ID is based on the max ID found in the loaded Excel file's Metadata sheet.</li>
+                            <li><strong>Combined:</strong> Mix static text and row data (e.g., <code>"AG_{row.ID (from API)}"</code>, <code>"Prefix:{row.Vqs}"</code>).</li>
+                            <li><strong>Function (Next ID):</strong> Use <code>{func.next_id}</code> to insert the next available sequential ID for the current row being processed. The same ID is used for all <code>{func.next_id}</code> placeholders within a single row's template application. The starting ID is based on the max ID found in the loaded Excel file's Metadata sheet (separated for VQs vs other types).</li>
                         </ul>
                     </div>
                      {# --- MODIFICATION END --- #}
@@ -202,7 +250,7 @@ TEMPLATE_MANAGER_HTML = """
               if (templates.length === 0) {
                   templateListEl.innerHTML = '<li class="text-gray-500 italic">No templates found. Create one!</li>';
               } else {
-                  templates.forEach(filename => {
+                  templates.forEach(filename => { /* ... create list items ... */
                       const li = document.createElement('li');
                       li.className = 'flex justify-between items-center text-sm border-b pb-1';
                       const baseName = filename.replace('.json', '');
