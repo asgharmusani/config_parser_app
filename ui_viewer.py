@@ -7,11 +7,13 @@ Features:
 - Finds the latest '*_processed.xlsx' file.
 - Separate pages for each comparison type (VQs, Skills, etc.).
 - Handles specific 5-column layout for 'Skill_exprs Comparison'.
+- Reads Max ID from 'Metadata' sheet for template functions.
 - Server-side pagination with selectable page size (100, 200, 500, 1000, All).
 - Server-side sorting by relevant columns for each view.
 - Displays data in a web browser using Flask and Tailwind CSS.
 - Includes Configuration Template Management section.
-- Allows applying templates to selected rows to generate update payloads.
+- Allows applying templates to selected rows, simulating the results,
+  and confirming the update (which is logged server-side).
 """
 
 import os
@@ -47,6 +49,20 @@ PAGE_SIZE_OPTIONS = [100, 200, 500, 1000] # Numeric options for page size dropdo
 COMPARISON_SUFFIX = " Comparison" # Expected suffix for comparison sheet names
 SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Specific name for the skill expression comparison sheet
 TEMPLATE_DIR = './config_templates/' # Directory to store JSON configuration templates
+METADATA_SHEET_NAME = "Metadata" # Name of the sheet containing max ID
+# --- MODIFICATION: Use separate constants for Max ID cells ---
+MAX_DN_ID_LABEL_CELL = "A1"
+MAX_DN_ID_VALUE_CELL = "B1"
+MAX_AG_ID_LABEL_CELL = "A2" # AG = Agent Group
+MAX_AG_ID_VALUE_CELL = "B2"
+# --- END MODIFICATION ---
+
+
+# Define the exact keys used when creating row data dicts in read_comparison_data.
+# These MUST match the headers read from the Excel AND the placeholders {row.KeyName} used in templates.
+SKILL_EXPR_ROW_KEYS = ["Concatenated Key", "Expression", "Ideal Expression", "ID", "Status"]
+STANDARD_ROW_KEYS = ["Item", "ID", "Status"]
+
 
 # --- Logging Setup ---
 # Configure logging to file and console
@@ -72,18 +88,28 @@ app = Flask(__name__)
 app.config['EXCEL_DATA'] = {} # Cache for {'Sheet Name': [list_of_row_dicts]}
 app.config['EXCEL_FILENAME'] = None # Cache for the name of the loaded file
 app.config['COMPARISON_SHEETS'] = [] # Cache for the list of comparison sheet names found
+# --- MODIFICATION: Initialize separate Max ID keys ---
+app.config['MAX_DN_ID'] = 0 # Cache for the Max DN ID read from Metadata sheet
+app.config['MAX_AG_ID'] = 0 # Cache for the Max AG ID read from Metadata sheet
+# --- END MODIFICATION ---
+
 
 # --- Register Blueprints ---
 # Register the routes defined in the imported blueprint files
 if template_bp:
     app.register_blueprint(template_bp)
     logging.info("Registered template_bp Blueprint.")
+else:
+    logging.error("template_bp was not imported successfully. Template routes will be unavailable.")
+
 if update_bp:
     app.register_blueprint(update_bp)
     logging.info("Registered update_bp Blueprint.")
+else:
+     logging.error("update_bp was not imported successfully. Update routes will be unavailable.")
 
 
-# --- HTML Template ---
+# --- HTML Template (Includes Simulation Review Modal) ---
 # Main Jinja2 template for rendering the UI pages
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -105,8 +131,6 @@ HTML_TEMPLATE = """
         th a { display: inline-flex; align-items: center; gap: 0.25rem; }
         th a:hover { text-decoration: underline; }
         .sort-icon { width: 1em; height: 1em; stroke-width: 2; }
-        /* Table layout - switched back to auto for better resizing */
-        /* .table-fixed-layout { table-layout: fixed; width: 100%; } */
         /* Action Bar fixed positioning and animation */
         #actionBar {
             transition: transform 0.3s ease-in-out;
@@ -115,6 +139,24 @@ HTML_TEMPLATE = """
         #actionBar.visible {
             transform: translateY(0); /* Slide into view */
         }
+        /* Styles for Simulation Modal */
+        #simulationModalBackdrop { background-color: rgba(0, 0, 0, 0.5); } /* Semi-transparent background */
+        #simulationModalContent { max-height: 80vh; } /* Limit modal height */
+        .json-preview { /* Style for displaying JSON in modal */
+            background-color: #f3f4f6; /* gray-100 */
+            border: 1px solid #d1d5db; /* gray-300 */
+            padding: 0.75rem;
+            border-radius: 0.25rem; /* rounded */
+            font-family: monospace; /* Monospace font for code */
+            font-size: 0.8rem; /* Smaller font size */
+            white-space: pre-wrap; /* Allow wrapping */
+            word-wrap: break-word; /* Break long words */
+            max-height: 50vh; /* Limit height and allow scrolling */
+            overflow-y: auto;
+        }
+         /* Help text styling */
+        .help-text ul { margin-top: 0.25rem; }
+        .help-text code { background-color: #e5e7eb; padding: 0.1em 0.3em; border-radius: 0.25em; font-size: 0.9em; }
     </style>
 </head>
 <body class="bg-gray-100 font-sans pb-20"> {# Padding bottom to prevent overlap with action bar #}
@@ -155,7 +197,7 @@ HTML_TEMPLATE = """
                     <strong class="font-bold">Error:</strong> <span class="block sm:inline">{{ error }}</span>
                 </div>
             {% endif %}
-             {# Show message if no data exists after loading #}
+             {# Show message if no data exists after loading - check pagination exists first #}
              {% if not page_data and not error and (not pagination or pagination.total_items == 0) %}
                  <div class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative" role="alert">
                     <strong class="font-bold">Note:</strong>
@@ -164,7 +206,7 @@ HTML_TEMPLATE = """
             {% endif %}
         </div>
 
-        {# Main Content Area - Table (Only shown if pagination data exists) #}
+        {# Main Content Area - Table (Only shown if pagination data exists and has items) #}
         {% if pagination and pagination.total_items > 0 %}
             <div class="bg-white shadow-md rounded-lg overflow-hidden">
                 {# Table Title and Selection Count #}
@@ -174,7 +216,7 @@ HTML_TEMPLATE = """
                 </h2>
                 {# Table container with horizontal scroll #}
                 <div class="overflow-x-auto p-3">
-                    {# Removed table-fixed-layout for auto column sizing #}
+                    {# Table - removed fixed layout for better auto-sizing #}
                     <table id="dataTable" class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                              {# --- Conditional Headers based on sheet type --- #}
@@ -240,13 +282,12 @@ HTML_TEMPLATE = """
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             {% for row in page_data %}
-                                {# Determine the unique identifier for this row (used for checkbox value) #}
+                                {# Determine the unique identifier for this row (used for checkbox value and data attribute) #}
                                 {% set row_id = row.get('Concatenated Key') if current_comparison_type == skill_expr_sheet_name else row.get('Item') %}
-                                <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id | default('', True) }}"> {# Use loop index for unique DOM id, store identifier in data attribute #}
+                                <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id | default('', True) }}">
                                     {# Checkbox Cell #}
                                     <td class="px-4 py-3 text-center">
-                                        <input type="checkbox" name="rowSelection" value="{{ row_id | default('', True) }}" onchange="handleRowSelectionChange()"
-                                               class="row-checkbox h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                                        <input type="checkbox" name="rowSelection" value="{{ row_id | default('', True) }}" onchange="handleRowSelectionChange()" class="row-checkbox h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                                     </td>
                                     {# Conditional Data Cells #}
                                     {% if current_comparison_type == skill_expr_sheet_name %}
@@ -255,16 +296,12 @@ HTML_TEMPLATE = """
                                         <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Expression', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 break-words">{{ row.get('Ideal Expression', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td> {# Prevent ID wrap #}
-                                        <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}">
-                                            {{ row.get('Status', '') | default('', True) }}
-                                        </td>
+                                        <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}"> {{ row.get('Status', '') | default('', True) }} </td>
                                     {% else %}
                                          {# 3 Data Columns for Others #}
                                         <td class="px-4 py-3 text-sm text-gray-900 break-words">{{ row.get('Item', '') | default('', True) }}</td>
                                         <td class="px-4 py-3 text-sm text-gray-500 whitespace-nowrap">{{ row.get('ID', '') | default('', True) }}</td> {# Prevent ID wrap #}
-                                        <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}">
-                                            {{ row.get('Status', '') | default('', True) }}
-                                        </td>
+                                        <td class="px-4 py-3 text-sm font-medium break-words {% if 'New' in row.get('Status', '') %} text-green-600 {% elif 'Missing' in row.get('Status', '') %} text-red-600 {% else %} text-gray-600 {% endif %}"> {{ row.get('Status', '') | default('', True) }} </td>
                                     {% endif %}
                                 </tr>
                             {% endfor %}
@@ -277,37 +314,23 @@ HTML_TEMPLATE = """
                      {# Left side: Page size selector #}
                      <div class="flex items-center text-sm text-gray-700">
                          <label for="pageSize" class="mr-2">Show:</label>
-                         <select id="pageSize" name="size" class="border border-gray-300 rounded-md text-sm p-1"
-                                 onchange="handlePageSizeChange(this.value)">
-                             {% for size_option in page_size_options %}
-                                 <option value="{{ size_option }}" {% if page_size_str == size_option|string %}selected{% endif %}>{{ size_option }}</option>
-                             {% endfor %}
+                         <select id="pageSize" name="size" class="border border-gray-300 rounded-md text-sm p-1" onchange="handlePageSizeChange(this.value)">
+                             {% for size_option in page_size_options %} <option value="{{ size_option }}" {% if page_size_str == size_option|string %}selected{% endif %}>{{ size_option }}</option> {% endfor %}
                              <option value="all" {% if page_size_str == 'all' %}selected{% endif %}>All</option>
                          </select>
                          <span class="ml-2">results per page</span>
                      </div>
                      {# Right side: Pagination info and buttons #}
                      <div class="flex items-center">
-                         <p class="text-sm text-gray-700 mr-4 hidden md:block">
-                             Showing <span class="font-medium">{{ pagination.start_item }}</span> to <span class="font-medium">{{ pagination.end_item }}</span> of <span class="font-medium">{{ pagination.total_items }}</span> results
-                         </p>
-                         {# Pagination buttons only shown if more than one page #}
+                         <p class="text-sm text-gray-700 mr-4 hidden md:block"> Showing <span class="font-medium">{{ pagination.start_item }}</span> to <span class="font-medium">{{ pagination.end_item }}</span> of <span class="font-medium">{{ pagination.total_items }}</span> results </p>
                          {% if pagination.total_pages > 1 %}
                          <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
                               {# Previous Button #}
-                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}"
-                                 class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}">
-                                  <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i>
-                              </a>
+                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}"> <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i> </a>
                               {# Page Indicator #}
-                              <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex">
-                                Page {{ pagination.page }} of {{ pagination.total_pages }}
-                              </span>
+                              <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex"> Page {{ pagination.page }} of {{ pagination.total_pages }} </span>
                               {# Next Button #}
-                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}"
-                                 class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}">
-                                  <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i>
-                              </a>
+                              <a href="{{ url_for('view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}"> <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i> </a>
                          </nav>
                          {% endif %}
                      </div>
@@ -316,83 +339,99 @@ HTML_TEMPLATE = """
         {% endif %} {# End if pagination and pagination.total_items > 0 #}
     </div>{# End Container #}
 
+    {# --- Simulation Review Modal --- #}
+    <div id="simulationModal" class="fixed inset-0 z-30 overflow-y-auto hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
+      <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+        <div id="simulationModalBackdrop" class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
+        <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
+        <div id="simulationModalContent" class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
+          {# Modal Header #}
+          <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
+            <div class="sm:flex sm:items-start">
+              <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10"> <i data-lucide="list-checks" class="h-6 w-6 text-blue-600"></i> </div>
+              <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
+                <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">Review Generated Payloads</h3>
+                <div class="mt-2">
+                   <p class="text-sm text-gray-600 mb-3">Review the JSON payloads that will be sent for update based on the selected template and rows. Errors encountered during generation are shown below.</p>
+                   <div id="simulationResultsArea" class="text-sm"> <p class="italic text-gray-500">Generating simulation...</p> </div>
+                   <div id="simulationErrorsArea" class="mt-2 text-red-600 text-xs"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          {# Modal Footer #}
+          <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
+            <button type="button" id="confirmUpdateButton" onclick="confirmUpdate()" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50" disabled> Confirm Update </button>
+            <button type="button" onclick="cancelSimulation()" class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm"> Cancel </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {# --- End Simulation Review Modal --- #}
+
+
     {# Action Bar (Fixed at bottom, initially hidden) #}
     <div id="actionBar" class="fixed bottom-0 left-0 right-0 bg-gray-800 text-white p-3 shadow-lg flex items-center justify-between z-10">
         <span id="actionBarMessage" class="text-sm font-medium">Select rows to apply configuration.</span>
         <div class="flex items-center space-x-4">
              <label for="templateSelect" class="text-sm">Apply Template:</label>
-             <select id="templateSelect" name="template" class="text-black border border-gray-300 rounded-md text-sm p-1.5 min-w-[150px]"> {# Added min-width #}
-                 <option value="">Loading templates...</option>
-             </select>
-             <button id="applyButton" onclick="applyConfiguration()" disabled
-                     class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed">
-                 Apply & Update DB
-             </button>
+             <select id="templateSelect" name="template" class="text-black border border-gray-300 rounded-md text-sm p-1.5 min-w-[150px]"> <option value="">Loading templates...</option> </select>
+             {# Button now triggers simulation first #}
+             <button id="simulateButton" onclick="simulateConfiguration()" disabled class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-md text-sm disabled:opacity-50 disabled:cursor-not-allowed"> Simulate Update </button>
         </div>
     </div>
 
     {# --- JavaScript Section --- #}
     <script>
-      // Initialize Lucide icons used in the template
+      // Initialize Lucide icons
       lucide.createIcons();
 
       // --- DOM Element References ---
       const actionBar = document.getElementById('actionBar');
       const actionBarMessage = document.getElementById('actionBarMessage');
-      const applyButton = document.getElementById('applyButton');
+      const simulateButton = document.getElementById('simulateButton');
       const templateSelect = document.getElementById('templateSelect');
       const selectionCountEl = document.getElementById('selectionCount');
       const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-      const rowCheckboxes = document.querySelectorAll('.row-checkbox'); // NodeList of all row checkboxes
-      const generalMessageArea = document.getElementById('generalMessageArea'); // Area for apply results
+      const rowCheckboxes = document.querySelectorAll('.row-checkbox');
+      const generalMessageArea = document.getElementById('generalMessageArea');
+      const simulationModal = document.getElementById('simulationModal');
+      const simulationResultsArea = document.getElementById('simulationResultsArea');
+      const simulationErrorsArea = document.getElementById('simulationErrorsArea');
+      const confirmUpdateButton = document.getElementById('confirmUpdateButton');
+
+      // --- State Variable ---
+      let selectedRowCount = 0;
+      let simulatedPayloads = []; // Store payloads from simulation step globally
 
       // --- Page Size Change Handler ---
       function handlePageSizeChange(newSize) {
-        // Get current URL
         const url = new URL(window.location.href);
-        // Set new size parameter
         url.searchParams.set('size', newSize);
-        // Reset page to 1 when size changes for consistency
-        url.searchParams.set('page', '1');
-        // Navigate to the new URL
+        url.searchParams.set('page', '1'); // Reset to page 1 when size changes
         window.location.href = url.toString();
       }
 
       // --- Row Selection Handling ---
-      let selectedRowCount = 0;
-
       function updateSelectionCount() {
-          // Count how many row checkboxes are currently checked
           selectedRowCount = document.querySelectorAll('.row-checkbox:checked').length;
-
-          // Update the selection count display text (e.g., "3 rows selected")
           if (selectionCountEl) {
-              if (selectedRowCount > 0) {
-                 selectionCountEl.textContent = `${selectedRowCount} row${selectedRowCount > 1 ? 's' : ''} selected`;
-                 selectionCountEl.style.display = 'inline'; // Show the count
-              } else {
-                 selectionCountEl.style.display = 'none'; // Hide if zero selected
-              }
+              selectionCountEl.textContent = `${selectedRowCount} row${selectedRowCount > 1 ? 's' : ''} selected`;
+              selectionCountEl.style.display = selectedRowCount > 0 ? 'inline' : 'none';
           }
-
-          // Show or hide the bottom Action Bar based on selection
           if (selectedRowCount > 0) {
-              actionBar.classList.add('visible'); // Make action bar slide in
+              actionBar.classList.add('visible');
               actionBarMessage.textContent = `${selectedRowCount} row${selectedRowCount > 1 ? 's' : ''} selected.`;
-              // Enable the 'Apply' button only if a template is also selected from the dropdown
-              applyButton.disabled = templateSelect.value === "";
+              simulateButton.disabled = templateSelect.value === "";
           } else {
-              actionBar.classList.remove('visible'); // Make action bar slide out
+              actionBar.classList.remove('visible');
               actionBarMessage.textContent = 'Select rows to apply configuration.';
-              applyButton.disabled = true; // Disable 'Apply' button if no rows selected
+              simulateButton.disabled = true;
           }
-
-          // Update the state of the "Select All" checkbox in the header
           if (selectAllCheckbox) {
               const totalCheckboxes = rowCheckboxes.length;
               if (totalCheckboxes > 0) {
                   selectAllCheckbox.checked = (selectedRowCount === totalCheckboxes);
-                  // Set indeterminate state if some but not all rows are selected
                   selectAllCheckbox.indeterminate = (selectedRowCount > 0 && selectedRowCount < totalCheckboxes);
               } else {
                    selectAllCheckbox.checked = false;
@@ -401,160 +440,179 @@ HTML_TEMPLATE = """
           }
       }
 
-      // Function called when an individual row checkbox changes state
       function handleRowSelectionChange() {
-          // Optional: Add/remove a visual highlight class to the selected table row
           document.querySelectorAll('.row-checkbox').forEach(cb => {
-              const row = cb.closest('tr'); // Find the parent <tr> element
+              const row = cb.closest('tr');
               if (row) {
-                  row.classList.toggle('selected-row', cb.checked); // Add/remove class based on checked state
+                  row.classList.toggle('selected-row', cb.checked);
               }
           });
-          // Update the selection count and action bar visibility
           updateSelectionCount();
       }
 
-      // Function called when the "Select All" checkbox changes state
       function toggleSelectAll(checked) {
-          // Check or uncheck all row checkboxes based on the 'checked' argument
           rowCheckboxes.forEach(checkbox => {
               checkbox.checked = checked;
-              // Also update the visual highlight for each row
               const row = checkbox.closest('tr');
                if (row) {
-                  row.classList.toggle('selected-row', checked);
-              }
+                   row.classList.toggle('selected-row', checked);
+               }
           });
-          // Update the selection count and action bar visibility
           updateSelectionCount();
       }
 
-      // --- Initial Setup on Page Load ---
+      // --- Initial Setup & Template Loading ---
       document.addEventListener('DOMContentLoaded', () => {
-          // Add event listeners to all row checkboxes
           rowCheckboxes.forEach(checkbox => {
               checkbox.addEventListener('change', handleRowSelectionChange);
           });
-          // Add event listener to the "Select All" checkbox
           if (selectAllCheckbox) {
-             selectAllCheckbox.addEventListener('change', (e) => toggleSelectAll(e.target.checked));
+              selectAllCheckbox.addEventListener('change', (e) => toggleSelectAll(e.target.checked));
           }
-          // Load the available templates into the dropdown in the action bar
           loadTemplatesForDropdown();
-          // Update counts and action bar state on initial load (handles back navigation)
           updateSelectionCount();
       });
 
-      // --- Template Loading for Action Bar Dropdown ---
       async function loadTemplatesForDropdown() {
           try {
-              // Fetch the list of template filenames from the backend endpoint
               const response = await fetch('{{ url_for("templates.list_templates") }}');
-              if (!response.ok) throw new Error('Failed to fetch templates');
-              const templates = await response.json(); // Expecting a list of filenames like ["template1.json", ...]
-
-              // Clear existing options and add a default placeholder
+              if (!response.ok) {
+                  throw new Error('Failed to fetch templates');
+              }
+              const templates = await response.json();
               templateSelect.innerHTML = '<option value="">-- Select Template --</option>';
               if (templates.length > 0) {
-                  // Populate the dropdown with template names (without .json extension)
                   templates.forEach(filename => {
                       const option = document.createElement('option');
-                      option.value = filename; // Value is the full filename
-                      option.textContent = filename.replace('.json', ''); // Display name without extension
+                      option.value = filename;
+                      option.textContent = filename.replace('.json', '');
                       templateSelect.appendChild(option);
                   });
-                   templateSelect.disabled = false; // Enable dropdown
+                   templateSelect.disabled = false;
               } else {
-                   // Show message if no templates are found
                    templateSelect.innerHTML = '<option value="">No templates found</option>';
-                   templateSelect.disabled = true; // Disable dropdown
+                   templateSelect.disabled = true;
               }
           } catch (error) {
               console.error('Error loading templates for dropdown:', error);
               templateSelect.innerHTML = '<option value="">Error loading</option>';
-              templateSelect.disabled = true; // Disable on error
+              templateSelect.disabled = true;
           }
       }
 
-      // Add listener to template dropdown to enable/disable apply button
        templateSelect.addEventListener('change', () => {
-            // Enable apply button only if rows are selected AND a template is chosen
-            applyButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
+            simulateButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
        });
 
 
-      // --- Apply Configuration Action ---
-      async function applyConfiguration() {
-            const selectedTemplate = templateSelect.value; // Get selected template filename
-            const checkedBoxes = document.querySelectorAll('.row-checkbox:checked'); // Get all checked row checkboxes
-            // Extract the unique identifier stored in the 'value' attribute of each checked checkbox
-            const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id); // Filter out any potentially empty values
+      // --- Simulation and Confirmation Logic ---
 
-            // Basic validation
-            if (!selectedTemplate) {
-                alert('Please select a configuration template.');
-                return;
-            }
-            if (selectedIds.length === 0) {
-                alert('Please select at least one row to apply the configuration.');
+      // 1. Simulate Configuration
+      async function simulateConfiguration() {
+            const selectedTemplate = templateSelect.value;
+            const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
+            const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id);
+
+            if (!selectedTemplate || selectedIds.length === 0) {
+                alert('Please select rows and a template first.');
                 return;
             }
 
-            // --- UI Feedback: Start Processing ---
-            applyButton.disabled = true; // Disable button
-            applyButton.textContent = 'Processing...'; // Change button text
-            // Display a message indicating processing has started
-            generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Applying configuration template '${selectedTemplate.replace('.json','')}' to ${selectedIds.length} selected item(s)...</div>`;
+            simulateButton.disabled = true;
+            simulateButton.textContent = 'Simulating...';
+            generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Running simulation...</div>`;
+            simulationResultsArea.innerHTML = `<p class="italic text-gray-500">Generating simulation...</p>`;
+            simulationErrorsArea.textContent = '';
+            confirmUpdateButton.disabled = true;
 
-            // --- API Call ---
             try {
-                // Send selected template name and row identifiers to the backend API endpoint
-                const response = await fetch('{{ url_for("updates.apply_configuration") }}', {
+                const response = await fetch('{{ url_for("updates.simulate_configuration") }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         templateName: selectedTemplate,
-                        selectedRowsData: selectedIds // Send the list of identifiers
+                        selectedRowsData: selectedIds
                     })
                 });
+                const result = await response.json();
+                generalMessageArea.innerHTML = ''; // Clear processing message
 
-                const result = await response.json(); // Expecting JSON response {message: ..., status: ..., errors?: []}
+                if (response.ok && result.payloads) {
+                    simulatedPayloads = result.payloads;
+                    simulationResultsArea.innerHTML = `<pre class="json-preview">${JSON.stringify(simulatedPayloads, null, 2)}</pre>`;
+                    confirmUpdateButton.disabled = false;
+                    if (result.errors && result.errors.length > 0) {
+                        simulationErrorsArea.textContent = `Simulation Warnings/Errors: ${result.errors.join('; ')}`;
+                    }
+                    if (result.message) {
+                        console.log("Simulation status:", result.message);
+                    }
+                    simulationModal.classList.remove('hidden'); // Show modal
+                } else {
+                    throw new Error(result.error || `Simulation request failed with status ${response.status}`);
+                }
+            } catch (error) {
+                console.error('Error during simulation:', error);
+                generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"> <strong class="font-bold">Simulation Error:</strong> ${error.message}. Check server logs (${LOG_FILE_UI}). </div>`;
+                simulatedPayloads = [];
+            } finally {
+                 simulateButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
+                 simulateButton.textContent = 'Simulate Update';
+            }
+      }
 
-                // --- UI Feedback: Handle Response ---
-                if (response.ok) { // Status 200-299 indicates success or partial success
+      // 2. Confirm Update
+      async function confirmUpdate() {
+            if (!simulatedPayloads || simulatedPayloads.length === 0) {
+                alert("No simulation data available to confirm.");
+                cancelSimulation();
+                return;
+            }
+
+            confirmUpdateButton.disabled = true;
+            confirmUpdateButton.textContent = 'Updating...';
+            generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Confirming update (simulation)...</div>`;
+            simulationModal.classList.add('hidden'); // Hide modal
+
+            try {
+                const response = await fetch('{{ url_for("updates.confirm_update") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ payloads: simulatedPayloads })
+                });
+                const result = await response.json();
+
+                if (response.ok) {
                      let messageClass = 'bg-green-100 border-green-300 text-green-700';
-                     let title = 'Success';
-                     // Check for specific status codes or messages indicating partial success/warnings
+                     let title = 'Update Confirmed';
                      if (response.status === 207 || (result.status && result.status.toLowerCase().includes('partial'))) {
                          messageClass = 'bg-yellow-100 border-yellow-300 text-yellow-700';
-                         title = 'Partial Success / Warnings';
+                         title = 'Update Partially Confirmed / Warnings';
                      }
-                     // Display success/warning message
-                     generalMessageArea.innerHTML = `<div class="${messageClass} px-4 py-3 rounded relative border" role="alert">
-                        <strong class="font-bold">${title}:</strong> ${result.message || 'Configuration applied.'} (Payloads logged server-side)
-                        ${result.errors ? `<br><span class='text-xs'>Errors: ${result.errors.join('; ')}</span>` : ''} {# Display errors if present #}
-                     </div>`;
-                     // Optionally clear selection after success/partial success
-                     // toggleSelectAll(false); // Uncomment to deselect rows
+                     generalMessageArea.innerHTML = `<div class="${messageClass} px-4 py-3 rounded relative border" role="alert"> <strong class="font-bold">${title}:</strong> ${result.message || 'Update confirmed (simulation complete).'} ${result.errors ? `<br><span class='text-xs'>Errors: ${result.errors.join('; ')}</span>` : ''} </div>`;
+                     toggleSelectAll(false); // Clear selection on success
                 } else {
-                    // Handle application-level errors reported by the backend
-                    throw new Error(result.error || `Request failed with status ${response.status}`);
+                    throw new Error(result.error || `Confirmation failed with status ${response.status}`);
                 }
-
             } catch (error) {
-                // Handle network errors or errors parsing the response
-                console.error('Error applying configuration:', error);
-                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
-                    <strong class="font-bold">Error:</strong> Failed to apply configuration. ${error.message}. Check server logs (${LOG_FILE_UI}).
-                 </div>`;
+                 console.error('Error confirming update:', error);
+                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"> <strong class="font-bold">Confirmation Error:</strong> ${error.message}. Check server logs (${LOG_FILE_UI}). </div>`;
             } finally {
-                // --- UI Feedback: End Processing ---
-                // Re-enable button and restore text, considering current selection state
-                 applyButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
-                 applyButton.textContent = 'Apply & Update DB';
-                 // Optional: Auto-hide the result message after some time
-                 // setTimeout(() => { generalMessageArea.innerHTML = ''; }, 15000); // Hide after 15 seconds
+                 confirmUpdateButton.disabled = false;
+                 confirmUpdateButton.textContent = 'Confirm Update';
+                 simulatedPayloads = []; // Clear stored payloads
+                 updateSelectionCount(); // Update action bar state
             }
+      }
+
+      // 3. Cancel Simulation
+      function cancelSimulation() {
+          simulationModal.classList.add('hidden'); // Hide modal
+          simulatedPayloads = []; // Clear stored payloads
+          simulateButton.disabled = selectedRowCount === 0 || templateSelect.value === ""; // Re-enable simulate button
+          simulateButton.textContent = 'Simulate Update';
+          generalMessageArea.innerHTML = ''; // Clear any simulation/confirmation messages
+          confirmUpdateButton.disabled = true; // Ensure confirm button is disabled
       }
 
     </script>
@@ -563,88 +621,285 @@ HTML_TEMPLATE = """
 """
 
 # --- Helper Functions ---
-# find_latest_processed_file (no changes)
 def find_latest_processed_file() -> Optional[str]:
-    """Finds the most recently modified '*_processed.xlsx' file in the current directory."""
-    try: list_of_files = glob.glob('*_processed.xlsx'); return max(list_of_files, key=os.path.getmtime) if list_of_files else None
-    except Exception as e: logging.error(f"Error finding latest processed file: {e}", exc_info=True); return None
-
-# read_comparison_data (no changes needed from v3)
-def read_comparison_data(filename: str) -> bool:
-    """ Reads data from '* Comparison' sheets into app config cache. Handles 5 columns specifically for Skill_exprs Comparison. Returns True on success, False on failure. """
-    global app; comparison_data = {}; workbook = None; comparison_sheet_names = []
+    """Finds the most recently modified '*_processed.xlsx' file."""
     try:
-        logging.info(f"Attempting to load workbook: {filename}"); workbook = openpyxl.load_workbook(filename, read_only=True, data_only=True); logging.info(f"Workbook loaded. Sheets: {workbook.sheetnames}")
-        comparison_sheet_names = sorted([s for s in workbook.sheetnames if s.endswith(COMPARISON_SUFFIX)]); logging.info(f"Found comparison sheets: {comparison_sheet_names}")
-        if not comparison_sheet_names: logging.warning(f"No sheets ending with '{COMPARISON_SUFFIX}' found."); app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; return True
+        list_of_files = glob.glob('*_processed.xlsx')
+        if not list_of_files:
+            return None
+        latest_file = max(list_of_files, key=os.path.getmtime)
+        return latest_file
+    except Exception as e:
+        logging.error(f"Error finding latest processed file: {e}", exc_info=True)
+        return None
+
+# read_comparison_data (MODIFIED to read MAX_IDs from Metadata)
+def read_comparison_data(filename: str) -> bool:
+    """
+    Reads data from '* Comparison' sheets into app config cache.
+    Handles 5 columns specifically for Skill_exprs Comparison.
+    Reads the maximum numeric IDs from the 'Metadata' sheet.
+    Returns True on success, False on failure.
+    """
+    global app # Needed to modify app.config
+    comparison_data = {}
+    workbook = None
+    comparison_sheet_names = []
+    max_dn_id_from_metadata = 0 # Initialize max IDs read from file
+    max_ag_id_from_metadata = 0
+
+    try:
+        logging.info(f"Attempting to load workbook: {filename}")
+        workbook = openpyxl.load_workbook(filename, read_only=True, data_only=True)
+        logging.info(f"Workbook loaded successfully. Sheets: {workbook.sheetnames}")
+
+        # --- Read Max IDs from Metadata sheet ---
+        if METADATA_SHEET_NAME in workbook.sheetnames:
+            try:
+                metadata_sheet = workbook[METADATA_SHEET_NAME]
+                # Read DN Max ID value
+                dn_id_val = metadata_sheet[MAX_DN_ID_VALUE_CELL].value
+                if dn_id_val is not None and str(dn_id_val).isdigit():
+                    max_dn_id_from_metadata = int(dn_id_val)
+                    logging.info(f"Read Max DN ID from '{METADATA_SHEET_NAME}' ({MAX_DN_ID_VALUE_CELL}): {max_dn_id_from_metadata}")
+                else:
+                    logging.warning(f"Value in '{METADATA_SHEET_NAME}' cell {MAX_DN_ID_VALUE_CELL} is not a valid number: '{dn_id_val}'. Using 0.")
+
+                # Read Agent Group Max ID value
+                ag_id_val = metadata_sheet[MAX_AG_ID_VALUE_CELL].value
+                if ag_id_val is not None and str(ag_id_val).isdigit():
+                    max_ag_id_from_metadata = int(ag_id_val)
+                    logging.info(f"Read Max AG ID from '{METADATA_SHEET_NAME}' ({MAX_AG_ID_VALUE_CELL}): {max_ag_id_from_metadata}")
+                else:
+                     logging.warning(f"Value in '{METADATA_SHEET_NAME}' cell {MAX_AG_ID_VALUE_CELL} is not a valid number: '{ag_id_val}'. Using 0.")
+
+            except Exception as meta_e:
+                logging.error(f"Error reading Max IDs from '{METADATA_SHEET_NAME}' sheet: {meta_e}. Using 0.")
+        else:
+            logging.warning(f"'{METADATA_SHEET_NAME}' sheet not found in workbook. Max IDs will be 0.")
+
+        # Store the read (or default 0) max IDs in app config
+        app.config['MAX_DN_ID'] = max_dn_id_from_metadata
+        app.config['MAX_AG_ID'] = max_ag_id_from_metadata
+        # --- End Read Max IDs ---
+
+
+        # Find all sheets ending with the comparison suffix
+        comparison_sheet_names = sorted([s for s in workbook.sheetnames if s.endswith(COMPARISON_SUFFIX)])
+        logging.info(f"Found comparison sheets: {comparison_sheet_names}")
+
+        # If no comparison sheets found, still return True but with empty data
+        if not comparison_sheet_names:
+            logging.warning(f"No sheets ending with '{COMPARISON_SUFFIX}' found in {filename}.")
+            app.config['EXCEL_DATA'] = {}
+            app.config['COMPARISON_SHEETS'] = []
+            app.config['EXCEL_FILENAME'] = filename
+            # MAX_IDs are already set from Metadata sheet check above
+            return True
+
+        # Process each comparison sheet
         for sheet_name in comparison_sheet_names:
-            sheet = workbook[sheet_name]; data: List[Dict[str, Any]] = []
-            try: headers = [cell.value for cell in sheet[1]]
-            except IndexError: logging.warning(f"Sheet '{sheet_name}' empty/no header. Skipping."); continue
-            is_skill_expr_sheet = (sheet_name == SKILL_EXPR_SHEET_NAME); max_cols = 5 if is_skill_expr_sheet else 3
-            if is_skill_expr_sheet and len(headers) >= 5: header_keys = ["Concatenated Key", "Expression", "Ideal Expression", "ID", "Status"]; item_header_display = headers[0]
-            elif not is_skill_expr_sheet and len(headers) >= 3: header_keys = ["Item", "ID", "Status"]; item_header_display = headers[0] if headers[0] else "Item"
-            else: logging.warning(f"Sheet '{sheet_name}' unexpected header count ({len(headers)}). Skipping."); continue
+            sheet = workbook[sheet_name]
+            data: List[Dict[str, Any]] = []
+            try:
+                # Read the header row (expected to be row 1)
+                headers = [cell.value for cell in sheet[1]]
+            except IndexError:
+                 # Handle case where sheet might be completely empty or has no header
+                 logging.warning(f"Sheet '{sheet_name}' seems empty or has no header row. Skipping.")
+                 continue # Skip this sheet
+
+            # Determine expected columns and keys based on sheet name
+            is_skill_expr_sheet = (sheet_name == SKILL_EXPR_SHEET_NAME)
+            if is_skill_expr_sheet:
+                expected_keys = SKILL_EXPR_ROW_KEYS
+                max_cols = len(expected_keys)
+                # Use first header as display header, fallback if empty
+                item_header_display = headers[0] if headers and headers[0] else "Concatenated Key"
+            else:
+                expected_keys = STANDARD_ROW_KEYS
+                max_cols = len(expected_keys)
+                item_header_display = headers[0] if headers and headers[0] else "Item"
+
+            # Check if header count matches expected columns
+            if len(headers) < max_cols:
+                 logging.warning(f"Sheet '{sheet_name}' has fewer headers ({len(headers)}) than expected ({max_cols}). Skipping.")
+                 continue
+
+            # Read data rows (starting from row 2)
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2, max_col=max_cols), start=2):
                 row_values = [cell.value for cell in row]
+                # Only add row if the first cell (Key/Item) has a value
                 if row_values and row_values[0] is not None and str(row_values[0]).strip() != "":
-                    row_data = {header_keys[i]: row_values[i] if i < len(row_values) else None for i in range(max_cols)}; row_data['Header'] = item_header_display; data.append(row_data)
-            comparison_data[sheet_name] = data; logging.info(f"Read {len(data)} valid rows from sheet '{sheet_name}'.")
-        app.config['EXCEL_DATA'] = comparison_data; app.config['COMPARISON_SHEETS'] = comparison_sheet_names; app.config['EXCEL_FILENAME'] = filename; return True
-    except FileNotFoundError: logging.error(f"Excel file not found: {filename}"); app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; return False
-    except InvalidFileException: logging.error(f"Invalid Excel file format: {filename}"); app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; return False
-    except Exception as e: logging.error(f"Error reading Excel file '{filename}': {e}", exc_info=True); app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; return False
+                    # Create dict using expected_keys
+                    row_data = {expected_keys[i]: row_values[i] if i < len(row_values) else None for i in range(max_cols)}
+                    row_data['Header'] = item_header_display # Store display header for UI
+                    data.append(row_data)
+                    # Note: Max ID calculation is now done from Metadata sheet, not here.
+
+            comparison_data[sheet_name] = data # Store data for this sheet
+            logging.info(f"Read {len(data)} valid rows from sheet '{sheet_name}'.")
+
+        # --- Store results in app config ---
+        app.config['EXCEL_DATA'] = comparison_data
+        app.config['COMPARISON_SHEETS'] = comparison_sheet_names
+        app.config['EXCEL_FILENAME'] = filename
+        # MAX_IDs were already stored earlier from Metadata sheet
+        # --- End Store results ---
+
+        return True # Indicate success
+
+    except FileNotFoundError:
+        logging.error(f"Excel file not found: {filename}")
+        app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; app.config['MAX_DN_ID'] = 0; app.config['MAX_AG_ID'] = 0
+        return False # Indicate failure
+    except InvalidFileException:
+        logging.error(f"Invalid Excel file format or corrupted file: {filename}")
+        app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; app.config['MAX_DN_ID'] = 0; app.config['MAX_AG_ID'] = 0
+        return False # Indicate failure
+    except Exception as e:
+        # Catch-all for other errors during file processing
+        logging.error(f"Error reading Excel file '{filename}': {e}", exc_info=True)
+        app.config['EXCEL_DATA'] = {}; app.config['COMPARISON_SHEETS'] = []; app.config['EXCEL_FILENAME'] = filename; app.config['MAX_DN_ID'] = 0; app.config['MAX_AG_ID'] = 0
+        return False # Indicate failure
     finally:
+        # Ensure workbook is closed to release resources
         if workbook:
-            try: workbook.close(); logging.debug("Workbook closed after reading.")
-            except Exception as close_e: logging.warning(f"Error closing workbook: {close_e}")
+            try:
+                workbook.close()
+                logging.debug("Workbook closed after reading.")
+            except Exception as close_e:
+                logging.warning(f"Error closing workbook: {close_e}")
 
 
 # get_comparison_data_or_reload (no changes)
 def get_comparison_data_or_reload() -> Tuple[Optional[str], Optional[str]]:
     """Gets cached data or triggers reload if cache is empty."""
+    # Check if data is already cached
     if not app.config.get('EXCEL_DATA') or not app.config.get('EXCEL_FILENAME'):
-        logging.info("Excel data cache is empty, attempting reload."); latest_file = find_latest_processed_file()
-        if not latest_file: error = "No '*_processed.xlsx' file found."; logging.warning(error); return None, error
+        logging.info("Excel data cache is empty or filename missing, attempting reload.")
+        # Find the latest processed file
+        latest_file = find_latest_processed_file()
+        if not latest_file:
+            error = "No '*_processed.xlsx' file found in the current directory."
+            logging.warning(error)
+            return None, error # Return None filename, error message
         else:
-            if not read_comparison_data(latest_file): error = f"Failed to read/process '{latest_file}'."; logging.error(error); return latest_file, error
-            else: return latest_file, None
-    else: return app.config['EXCEL_FILENAME'], None
+            # Attempt to read data from the found file
+            if not read_comparison_data(latest_file):
+                # If reading fails, return filename and error message
+                error = f"Failed to read or process '{latest_file}'. Check logs ({LOG_FILE_UI}) for details."
+                logging.error(error)
+                return latest_file, error
+            else:
+                # Success reading data
+                return latest_file, None # Return filename, no error
+    else:
+        # Data is already in cache
+        return app.config['EXCEL_FILENAME'], None
 
 
 # --- Flask Routes ---
 # index (no changes needed from v3)
 @app.route('/')
 def index():
-    """Redirects to the first available comparison sheet or shows error."""
+    """Redirects to the first available comparison sheet or shows error page."""
     filename, error = get_comparison_data_or_reload()
-    # Pass skill_expr_sheet_name even on error for template consistency
-    if error: return render_template_string( HTML_TEMPLATE, title="Error", comparison_data={}, page_data=[], pagination=None, filename=filename or "N/A", available_sheets=[], current_comparison_type=None, sort_by=None, sort_order=None, page_size_str='N/A', page_size_options=PAGE_SIZE_OPTIONS, comparison_suffix=COMPARISON_SUFFIX, error=error, skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME )
+    # Pass necessary variables even on error for template rendering
+    if error:
+        return render_template_string(
+            HTML_TEMPLATE, title="Error", comparison_data={}, page_data=[], pagination=None,
+            filename=filename or "N/A", available_sheets=[], current_comparison_type=None,
+            sort_by=None, sort_order=None, page_size_str='N/A', page_size_options=PAGE_SIZE_OPTIONS,
+            comparison_suffix=COMPARISON_SUFFIX, error=error, skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME
+        )
+    # If data loaded successfully, get sheet list
     available_sheets = app.config.get('COMPARISON_SHEETS', [])
-    if available_sheets: return redirect(url_for('view_comparison', comparison_type=available_sheets[0]))
-    else: return render_template_string( HTML_TEMPLATE, title="No Data", comparison_data={}, page_data=[], pagination=None, filename=filename or "N/A", available_sheets=[], current_comparison_type=None, sort_by=None, sort_order=None, page_size_str='N/A', page_size_options=PAGE_SIZE_OPTIONS, comparison_suffix=COMPARISON_SUFFIX, error="No comparison sheets found in the Excel file.", skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME )
+    if available_sheets:
+        # Redirect to the view of the first comparison sheet
+        return redirect(url_for('view_comparison', comparison_type=available_sheets[0]))
+    else:
+        # Render showing no comparison sheets found message
+        return render_template_string(
+            HTML_TEMPLATE, title="No Data", comparison_data={}, page_data=[], pagination=None,
+            filename=filename or "N/A", available_sheets=[], current_comparison_type=None,
+            sort_by=None, sort_order=None, page_size_str='N/A', page_size_options=PAGE_SIZE_OPTIONS,
+            comparison_suffix=COMPARISON_SUFFIX, error="No comparison sheets found in the Excel file.",
+            skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME
+        )
 
 
-# view_comparison (FIXED sort_key definition)
+# view_comparison (Corrected sort_key definition)
 @app.route('/view/<comparison_type>')
 def view_comparison(comparison_type):
     """Displays a specific comparison type with pagination and sorting."""
-    filename, error = get_comparison_data_or_reload();
-    if error: return redirect(url_for('index'))
-    all_data = app.config.get('EXCEL_DATA', {}); available_sheets = app.config.get('COMPARISON_SHEETS', [])
-    if comparison_type not in all_data: logging.warning(f"Invalid comparison type '{comparison_type}'."); return redirect(url_for('index'))
-    page = request.args.get('page', 1, type=int); page_size_str = request.args.get('size', str(DEFAULT_PAGE_SIZE), type=str).lower()
-    is_skill_expr_sheet = (comparison_type == SKILL_EXPR_SHEET_NAME); default_sort_col = 'Concatenated Key' if is_skill_expr_sheet else 'Item'; sort_by = request.args.get('sort_by', default_sort_col, type=str); sort_order = request.args.get('order', 'asc', type=str).lower()
-    if page < 1: page = 1;
-    if sort_order not in ['asc', 'desc']: sort_order = 'asc'
-    if is_skill_expr_sheet: valid_sort_columns = ['Concatenated Key', 'Expression', 'Ideal Expression', 'ID', 'Status']
-    else: valid_sort_columns = ['Item', 'ID', 'Status']
-    if sort_by not in valid_sort_columns: sort_by = default_sort_col
-    show_all = (page_size_str == 'all'); page_size = DEFAULT_PAGE_SIZE
+    filename, error = get_comparison_data_or_reload()
+    if error:
+        # If data load failed, redirect to index to show the error
+        return redirect(url_for('index'))
+
+    all_data = app.config.get('EXCEL_DATA', {})
+    available_sheets = app.config.get('COMPARISON_SHEETS', [])
+
+    # Check if the requested comparison type exists in the loaded data
+    if comparison_type not in all_data:
+        logging.warning(f"Invalid comparison type requested: '{comparison_type}'. Redirecting to index.")
+        return redirect(url_for('index'))
+
+    # --- Get parameters from URL query string ---
+    try:
+        page = request.args.get('page', 1, type=int)
+        # Get size as string first to handle 'all'
+        page_size_str = request.args.get('size', str(DEFAULT_PAGE_SIZE), type=str).lower()
+        # Determine default sort column based on sheet type
+        is_skill_expr_sheet = (comparison_type == SKILL_EXPR_SHEET_NAME)
+        default_sort_col = 'Concatenated Key' if is_skill_expr_sheet else 'Item'
+        sort_by = request.args.get('sort_by', default_sort_col, type=str)
+        sort_order = request.args.get('order', 'asc', type=str).lower()
+    except ValueError:
+        # Fallback to defaults if query parameters are invalid type
+        logging.warning("Invalid query parameter type received, using defaults.")
+        page = 1
+        page_size_str = str(DEFAULT_PAGE_SIZE)
+        is_skill_expr_sheet = (comparison_type == SKILL_EXPR_SHEET_NAME) # Recalculate here
+        default_sort_col = 'Concatenated Key' if is_skill_expr_sheet else 'Item'
+        sort_by = default_sort_col
+        sort_order = 'asc'
+
+
+    # --- Validate and process parameters ---
+    if page < 1:
+        page = 1 # Ensure page is at least 1
+    if sort_order not in ['asc', 'desc']:
+        sort_order = 'asc' # Default to ascending
+
+    # Define valid sort columns based on the sheet type being viewed
+    if is_skill_expr_sheet:
+        valid_sort_columns = SKILL_EXPR_ROW_KEYS # Use keys defined earlier
+    else:
+        valid_sort_columns = STANDARD_ROW_KEYS
+    # If requested sort_by is invalid, revert to default for this sheet type
+    if sort_by not in valid_sort_columns:
+        sort_by = default_sort_col
+
+    # Determine numeric page size
+    show_all = (page_size_str == 'all')
+    page_size = DEFAULT_PAGE_SIZE # Default numeric size
     if not show_all:
-        try: requested_size = int(page_size_str); page_size = requested_size if requested_size in PAGE_SIZE_OPTIONS else DEFAULT_PAGE_SIZE
-        except ValueError: page_size_str = str(DEFAULT_PAGE_SIZE)
-    current_data = all_data.get(comparison_type, []); total_items = len(current_data)
+        try:
+            requested_size = int(page_size_str)
+            # Use requested size only if it's one of the predefined valid options
+            if requested_size in PAGE_SIZE_OPTIONS:
+                 page_size = requested_size
+            # else: keep the default numeric page_size
+        except ValueError:
+            # If conversion fails (e.g., size=abc), reset string and use default numeric
+            page_size_str = str(DEFAULT_PAGE_SIZE)
+            # page_size already holds DEFAULT_PAGE_SIZE
+
+    # --- Get data for the current type ---
+    current_data = all_data.get(comparison_type, [])
+    total_items = len(current_data)
 
     # --- Sorting ---
     logging.debug(f"Sorting '{comparison_type}' data by '{sort_by}' ({sort_order})")
@@ -652,91 +907,167 @@ def view_comparison(comparison_type):
 
     # --- CORRECTED sort_key function definition ---
     def sort_key(item):
-        """Generate a sort key, handling None and converting types."""
-        value = item.get(sort_by) # Use the correct key based on sort_by parameter
+        """Generate a sort key for Python's sort, handling None and basic types."""
+        value = item.get(sort_by) # Get the value for the column we're sorting by
+
+        # Handle None values consistently
         if value is None:
-            # Place None values consistently (e.g., at the end when ascending)
+            # Place None at the end when ascending, beginning when descending
+            # Using tuples for sort precedence: (group, value)
             return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
+
+        # Attempt type-specific comparison, falling back to string
         try:
-            if sort_by == 'ID':
+            if sort_by == 'ID': # Special handling for ID column
                 try:
-                    # Attempt numeric sort for ID, group numbers first
-                    return (0, float(value))
+                    # Try to treat as number first for numeric sorting
+                    return (0, float(value)) # Group numbers first
                 except (ValueError, TypeError):
                      # Treat non-numeric IDs as strings, group after numbers
                     return (1, str(value).lower())
-            # Default: Case-insensitive string sort for other columns
+            # Default: Case-insensitive string sort for all other columns
             return (0, str(value).lower())
         except Exception as e:
+            # Fallback for any unexpected error during value processing
             logging.warning(f"Could not process value '{value}' for sorting by '{sort_by}': {e}")
-             # Final fallback: treat as string, group after potential numbers/valid strings
+             # Group these problematic values last
             return (2, str(value).lower())
     # --- End of corrected sort_key function ---
 
+    # Perform the sort
     try:
         sorted_data = sorted(current_data, key=sort_key, reverse=reverse_sort)
     except Exception as sort_e:
-        logging.error(f"Error during sorting: {sort_e}", exc_info=True)
-        error = f"Error sorting data by {sort_by}. Displaying unsorted."
-        sorted_data = current_data # Fallback to unsorted
+        # Handle potential errors during sorting (e.g., complex type issues)
+        logging.error(f"Error during sorting data for '{comparison_type}': {sort_e}", exc_info=True)
+        error = f"Error sorting data by {sort_by}. Displaying unsorted." # Inform user via error var
+        sorted_data = current_data # Fallback to unsorted data
 
     # --- Pagination ---
+    # Calculate pagination details based on sorted data and page size
     if show_all:
-        page = 1; total_pages = 1 if total_items > 0 else 0; start_index = 0; end_index = total_items; page_data = sorted_data
+        # If showing all, set page to 1, one total page, and use all sorted data
+        page = 1
+        total_pages = 1 if total_items > 0 else 0
+        start_index = 0
+        end_index = total_items
+        page_data = sorted_data
     elif total_items > 0:
-        total_pages = math.ceil(total_items / page_size); page = min(page, total_pages); start_index = (page - 1) * page_size; end_index = start_index + page_size; page_data = sorted_data[start_index:end_index]
+        # Calculate total pages needed
+        total_pages = math.ceil(total_items / page_size)
+        # Adjust current page if it exceeds total pages
+        page = min(page, total_pages)
+        # Calculate start and end index for slicing
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        # Get the slice of data for the current page
+        page_data = sorted_data[start_index:end_index]
     else:
-        total_pages = 0; start_index = 0; end_index = 0; page_data = []
+        # Handle case where there are no items
+        total_pages = 0
+        start_index = 0
+        end_index = 0
+        page_data = []
 
-    pagination_info = { 'page': page, 'total_pages': total_pages, 'total_items': total_items, 'has_prev': page > 1 and not show_all, 'prev_num': page - 1, 'has_next': page < total_pages and not show_all, 'next_num': page + 1, 'start_item': min(start_index + 1, total_items) if total_items > 0 else 0, 'end_item': min(end_index, total_items) }
+    # Create pagination info dictionary for the template
+    pagination_info = {
+        'page': page,
+        'total_pages': total_pages,
+        'total_items': total_items,
+        'has_prev': page > 1 and not show_all, # Previous link only if not on page 1 and not showing all
+        'prev_num': page - 1,
+        'has_next': page < total_pages and not show_all, # Next link only if not on last page and not showing all
+        'next_num': page + 1,
+        'start_item': min(start_index + 1, total_items) if total_items > 0 else 0, # Displayed item range start (1-based)
+        'end_item': min(end_index, total_items) # Displayed item range end
+    }
     logging.debug(f"Pagination for '{comparison_type}': Page {page}/{total_pages}, Size='{page_size_str}', Items {pagination_info['start_item']}-{pagination_info['end_item']} of {total_items}")
 
-    # --- Render ---
+    # --- Render Template ---
+    # Pass all necessary data to the Jinja2 template
     return render_template_string(
         HTML_TEMPLATE,
-        title=comparison_type.replace(COMPARISON_SUFFIX, ''),
-        comparison_data=all_data,
-        page_data=page_data,
-        pagination=pagination_info,
-        filename=filename,
-        available_sheets=available_sheets,
-        current_comparison_type=comparison_type,
-        sort_by=sort_by,
-        sort_order=sort_order,
-        page_size_str=page_size_str,
-        page_size_options=PAGE_SIZE_OPTIONS,
-        comparison_suffix=COMPARISON_SUFFIX,
-        skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME,
-        error=error
+        title=comparison_type.replace(COMPARISON_SUFFIX, ''), # Cleaner title for the page tab
+        comparison_data=all_data, # Pass all loaded data (might be useful for future features)
+        page_data=page_data,      # Pass only the data for the current page to display in the table
+        pagination=pagination_info, # Pass pagination details for controls
+        filename=filename, # Pass the source Excel filename
+        available_sheets=available_sheets, # Pass list of sheet names for navigation tabs
+        current_comparison_type=comparison_type, # Pass the currently viewed sheet name
+        sort_by=sort_by, # Pass current sort column
+        sort_order=sort_order, # Pass current sort order
+        page_size_str=page_size_str, # Pass page size selection (string 'all' or number)
+        page_size_options=PAGE_SIZE_OPTIONS, # Pass numeric page size options for dropdown
+        comparison_suffix=COMPARISON_SUFFIX, # Pass suffix constant if needed in template
+        skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME, # Pass constant for conditional rendering
+        error=error # Pass any error message encountered during processing
     )
 
 
 # refresh_data (no changes)
 @app.route('/refresh')
 def refresh_data():
-    """Clears the cache and reloads data, then redirects."""
-    logging.info("Refresh request received. Clearing data cache."); app.config['EXCEL_DATA'] = {}; app.config['EXCEL_FILENAME'] = None; app.config['COMPARISON_SHEETS'] = []; return redirect(url_for('index'))
+    """Clears the cached Excel data and reloads it, then redirects to index."""
+    logging.info("Refresh request received. Clearing data cache.")
+    # Clear cached data in app config
+    app.config['EXCEL_DATA'] = {}
+    app.config['EXCEL_FILENAME'] = None
+    app.config['COMPARISON_SHEETS'] = []
+    # --- MODIFICATION: Reset both Max IDs ---
+    app.config['MAX_DN_ID'] = 0
+    app.config['MAX_AG_ID'] = 0
+    # --- END MODIFICATION ---
+    # Redirect to the index page, which will trigger the data loading process again
+    return redirect(url_for('index'))
 
 
-# --- Main Execution ---
+# --- Main Execution Block ---
 if __name__ == '__main__':
+    # This block runs only when the script is executed directly (e.g., python ui_viewer.py)
     logging.info("Starting Flask Comparison Results Viewer...")
     print("Starting UI Viewer...")
     print(f"Log file: {LOG_FILE_UI}")
-    # Ensure template directory exists
+
+    # Ensure the directory for storing configuration templates exists
     if not os.path.exists(TEMPLATE_DIR):
-        try: os.makedirs(TEMPLATE_DIR); logging.info(f"Created missing template directory: {TEMPLATE_DIR}"); print(f"Created template directory: {TEMPLATE_DIR}")
-        except OSError as e: logging.error(f"Could not create template directory {TEMPLATE_DIR}: {e}"); print(f"ERROR: Could not create template directory {TEMPLATE_DIR}. Please create it manually.")
+        try:
+            os.makedirs(TEMPLATE_DIR)
+            logging.info(f"Created missing template directory: {TEMPLATE_DIR}")
+            print(f"Created template directory: {TEMPLATE_DIR}")
+        except OSError as e:
+            # Log and print error if directory creation fails
+            logging.error(f"Could not create template directory {TEMPLATE_DIR}: {e}")
+            print(f"ERROR: Could not create template directory {TEMPLATE_DIR}. Please create it manually.")
+            # Consider exiting if this directory is critical
+            # sys.exit(1)
+
+    # Attempt to load data initially before starting the server
     print("Attempting to find and load the latest '*_processed.xlsx' file...")
     _, initial_error = get_comparison_data_or_reload()
-    if initial_error: print(f"Initial data load failed: {initial_error}")
+    if initial_error:
+        # Inform user if initial data load failed, but still start the server
+        print(f"Initial data load failed: {initial_error}")
+        print("The application will start, but data may be unavailable until refreshed or the file is fixed.")
+
+    # Start the Flask development server
     try:
         print(f"\nViewer running. Open your web browser and go to http://127.0.0.1:5001\n")
-        # Set debug=True for development to see errors easily, but False for stability
+        # Run the app on localhost, port 5001
+        # debug=False is recommended for stability, set to True for development debugging (enables auto-reload)
+        # threaded=True allows handling multiple requests concurrently (useful for JS fetches)
         app.run(host='127.0.0.1', port=5001, debug=False, threaded=True)
     except OSError as e:
-        if "address already in use" in str(e).lower(): err_msg = "Port 5001 is already in use."; logging.error(err_msg); print(f"ERROR: {err_msg}")
-        else: logging.error(f"Failed to start Flask server: {e}", exc_info=True); print(f"ERROR: Failed to start web server. See {LOG_FILE_UI} for details.")
+        # Handle common error: port already in use
+        if "address already in use" in str(e).lower():
+             err_msg = "Port 5001 is already in use. Please close other applications using this port or modify the port number in ui_viewer.py."
+             logging.error(err_msg)
+             print(f"ERROR: {err_msg}")
+        else:
+             # Handle other OS errors during server start
+             logging.error(f"Failed to start Flask server: {e}", exc_info=True)
+             print(f"ERROR: Failed to start web server. See {LOG_FILE_UI} for details.")
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}", exc_info=True); print(f"FATAL: An unexpected error occurred. See {LOG_FILE_UI} for details.")
+        # Catch any other unexpected errors during startup
+        logging.error(f"An unexpected error occurred on startup: {e}", exc_info=True)
+        print(f"FATAL: An unexpected error occurred. See {LOG_FILE_UI} for details.")
 

@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Flask Blueprint for managing configuration templates (.json files).
-
-This blueprint handles routes related to:
-- Displaying the template management UI page.
-- Listing existing template files.
-- Retrieving the content of a specific template file.
-- Saving new or updated template files.
-- Deleting template files.
-- Proxying requests to fetch reference API data (to avoid CORS).
+Handles listing, viewing, saving, deleting, fetching reference API data,
+and includes the placeholder replacement logic.
 """
 
 import os
@@ -16,24 +10,74 @@ import json
 import logging
 import datetime
 import requests
-from flask import Blueprint, request, jsonify, render_template_string, abort
+import re # Added for placeholder logic
+from flask import Blueprint, request, jsonify, render_template_string, abort, current_app # Added current_app
+from typing import Dict, Any, Optional, List # Added List
 
 # --- Constants ---
-TEMPLATE_DIR = './config_templates/' # Directory where JSON templates are stored
-TEMPLATE_PREFIX = 'RE_Config_'       # Optional prefix for template names (not strictly enforced here)
-LOG_FILE_UI = 'ui_viewer.log'        # Assuming shared log file with main app
+TEMPLATE_DIR = './config_templates/'
+LOG_FILE_UI = 'ui_viewer.log'
 
 # --- Logging ---
-# Use the root logger configured in the main app (ui_viewer.py)
 logger = logging.getLogger()
 
 # --- Blueprint Definition ---
-# Create a Blueprint named 'templates'. The main app (ui_viewer.py) will register this.
-# No separate template folder is specified; the HTML is embedded in this file.
 template_bp = Blueprint('templates', __name__, template_folder=None)
 
-# --- HTML Template for Template Manager ---
-# This HTML structure defines the UI for the '/templates' page.
+# --- Helper Function: Placeholder Replacement ---
+# (No changes needed in this function from previous version)
+def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id: Optional[int] = None) -> Any:
+    """
+    Recursively traverses a template structure (dict, list, or string)
+    and replaces placeholders with values from row_data or the pre-generated ID.
+    """
+    placeholder_pattern = re.compile(r'{(\w+)\.([^}]+)}') # Captures type (row/func) and name
+
+    def perform_replace(text: str) -> str:
+        """Performs replacements on a single string."""
+        if not isinstance(text, str):
+            return text
+
+        def replace_match(match):
+            placeholder_type = match.group(1).lower()
+            placeholder_name = match.group(2).strip()
+
+            if placeholder_type == 'row':
+                replacement = row_data.get(placeholder_name, "")
+                return str(replacement)
+            elif placeholder_type == 'func':
+                if placeholder_name == 'next_id':
+                    if current_row_next_id is not None:
+                        return str(current_row_next_id)
+                    else:
+                        logger.warning(f"Placeholder {{func.next_id}} used but no ID provided for this row.")
+                        return "{ERROR:next_id_missing}"
+                else:
+                    logger.warning(f"Unknown function placeholder: {match.group(0)}")
+                    return match.group(0)
+            else:
+                 logger.warning(f"Unknown placeholder type in template: {match.group(0)}")
+                 return match.group(0)
+
+        return placeholder_pattern.sub(replace_match, text)
+
+    if isinstance(template_data, str):
+        return perform_replace(template_data)
+    elif isinstance(template_data, dict):
+        return {
+            key: replace_placeholders(value, row_data, current_row_next_id)
+            for key, value in template_data.items()
+        }
+    elif isinstance(template_data, list):
+        return [
+            replace_placeholders(item, row_data, current_row_next_id)
+            for item in template_data
+        ]
+    else:
+        return template_data
+
+
+# --- HTML Template for Template Manager (Updated Examples & Help Text) ---
 TEMPLATE_MANAGER_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -41,85 +85,77 @@ TEMPLATE_MANAGER_HTML = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Configuration Templates</title>
-    {# Load Tailwind CSS via CDN for styling #}
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
-    {# Load Lucide icons library #}
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
      <style>
-        /* Basic styling for elements */
-        .json-display { /* Style for displaying JSON content */
-            background-color: #f3f4f6; /* gray-100 */
-            border: 1px solid #d1d5db; /* gray-300 */
-            padding: 1rem;
-            border-radius: 0.375rem; /* rounded-md */
-            max-height: 300px; /* Limit height and allow scrolling */
-            overflow-y: auto;
-            white-space: pre-wrap; /* Allow wrapping */
-            word-wrap: break-word; /* Break long words */
-            font-family: monospace; /* Use monospace font for code */
-            font-size: 0.875rem; /* text-sm */
-        }
-        textarea { /* Style for the template editor textarea */
-            font-family: monospace;
-            font-size: 0.875rem; /* text-sm */
-            min-height: 250px; /* Set a minimum height */
-        }
+        /* Basic styling */
+        .json-display { background-color: #f3f4f6; border: 1px solid #d1d5db; padding: 1rem; border-radius: 0.375rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word; font-family: monospace; font-size: 0.875rem; }
+        textarea { font-family: monospace; font-size: 0.875rem; min-height: 300px; }
+        code { background-color: #e5e7eb; padding: 0.1em 0.3em; border-radius: 0.25em; font-size: 0.9em; }
+        .help-text ul { margin-top: 0.25rem; }
+        .help-text li { margin-bottom: 0.25rem;}
     </style>
 </head>
 <body class="bg-gray-100 font-sans">
     <div class="container mx-auto p-4 sm:p-6 lg:p-8">
         <h1 class="text-3xl font-bold text-gray-800 mb-4">Configuration Template Manager</h1>
-
-        {# Link back to main comparison viewer page #}
-         <div class="mb-6">
-            <a href="{{ url_for('index') }}" class="text-indigo-600 hover:text-indigo-800 text-sm">&larr; Back to Comparison Viewer</a>
-        </div>
-
-        {# Area for displaying success/error messages from actions #}
+         <div class="mb-6"> <a href="{{ url_for('index') }}" class="text-indigo-600 hover:text-indigo-800 text-sm">&larr; Back to Comparison Viewer</a> </div>
         <div id="messageArea" class="mb-4"></div>
 
-        {# Main grid layout: Lister | Editor #}
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-
             {# Column 1: Template Lister #}
             <div class="md:col-span-1 bg-white p-4 shadow rounded-lg">
                 <h2 class="text-xl font-semibold mb-3 border-b pb-2">Existing Templates</h2>
-                {# List element populated by JavaScript #}
-                <ul id="templateList" class="list-none space-y-2">
-                     <li class="text-gray-500 italic">Loading...</li>
-                </ul>
+                <ul id="templateList" class="list-none space-y-2"> <li class="text-gray-500 italic">Loading...</li> </ul>
             </div>
 
             {# Column 2: Template Editor/Creator #}
             <div class="md:col-span-2 bg-white p-4 shadow rounded-lg">
                 <h2 class="text-xl font-semibold mb-3 border-b pb-2">Create / Edit Template</h2>
 
-                {# Optional: Reference API Fetcher Section #}
+                {# Reference API Fetcher #}
                 <div class="mb-4 p-3 border rounded bg-gray-50">
                     <h3 class="text-sm font-medium text-gray-600 mb-2">Reference API Data (Optional)</h3>
                     <div class="flex items-center space-x-2 mb-2">
-                        <input type="text" id="refApiUrl" placeholder="Enter API URL (e.g., Agent Group URL)"
-                               class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                        <input type="text" id="refApiUrl" placeholder="Enter API URL (e.g., Agent Group URL)" class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
                         <button onclick="fetchReferenceApi()" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm">Fetch Example</button>
                     </div>
-                    {# Areas to display fetched data or errors #}
                     <div id="refApiResult" class="json-display text-xs" style="display: none;"></div>
                     <div id="refApiError" class="text-red-600 text-xs mt-1"></div>
                 </div>
 
-                {# Template Definition Text Area #}
+                {# Template Definition Area #}
                 <div class="mb-4">
                     <label for="templateContent" class="block text-sm font-medium text-gray-700 mb-1">Template JSON Structure:</label>
-                    <textarea id="templateContent" rows="10" placeholder='{\n  "type": "agentGroup",\n  "key": "{row.Concatenated Key}",\n  "unNormalizedExpression": "{row.Expression}",\n  "IdealExpression": "{row.Ideal Expression}"\n}'
-                              class="w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
-                    <p class="text-xs text-gray-500 mt-1">Define the target JSON. Use placeholders like <code>{row.ColumnName}</code> to map data from selected rows (case-sensitive, matches keys from Excel reader).</p>
+                    {# --- MODIFICATION START: Updated placeholder example --- #}
+                    <textarea id="templateContent" rows="15"
+                        placeholder='{\n  "staticExample": "This is a fixed value",\n  "entityType": "agentGroup",\n  "vqName": "{row.Item}", \n  "skillExprKey": "{row.Concatenated Key}",\n  "combinedExample": "AG_{row.ID}_Suffix",\n  "needsReview": true,\n  "newIdExample": "{func.next_id}",\n  "details": {\n    "expression": "{row.Expression}",\n    "ideal": "{row.Ideal Expression}",\n    "statusFromSheet": "{row.Status}"\n  }\n}'
+                        class="w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+                    {# --- MODIFICATION END --- #}
+
+                    {# --- MODIFICATION START: Updated help text --- #}
+                    <div class="text-xs text-gray-600 mt-1 space-y-1 help-text">
+                        <p>Define the target JSON structure for database updates.</p>
+                        <p><strong>Value Types:</strong></p>
+                        <ul class="list-disc list-inside ml-2">
+                            <li><strong>Static:</strong> Enter plain text, numbers, or booleans (e.g., <code>"active": true</code>).</li>
+                            <li><strong>Row Data:</strong> Use <code>{row.ColumnName}</code>. The <code>ColumnName</code> must exactly match a key in the data read from the comparison sheet row.
+                                <ul class="list-circle list-inside ml-4">
+                                     <li>For VQs, Skills, VAGs sheets: <code>{row.Item}</code>, <code>{row.ID}</code>, <code>{row.Status}</code></li>
+                                     <li>For Skill Exprs sheet: <code>{row.Concatenated Key}</code>, <code>{row.Expression}</code>, <code>{row.Ideal Expression}</code>, <code>{row.ID}</code>, <code>{row.Status}</code></li>
+                                </ul>
+                            </li>
+                            <li><strong>Combined:</strong> Mix static text and row data (e.g., <code>"AG_{row.ID}"</code>, <code>"Prefix:{row.Item}"</code>).</li>
+                            <li><strong>Function (Next ID):</strong> Use <code>{func.next_id}</code> to insert the next available sequential ID for the current row being processed. The same ID is used for all <code>{func.next_id}</code> placeholders within a single row's template application. The starting ID is based on the max ID found in the loaded Excel file's Metadata sheet.</li>
+                        </ul>
+                    </div>
+                     {# --- MODIFICATION END --- #}
                 </div>
 
                 {# Saving Section #}
                 <div class="flex items-center space-x-3">
                      <label for="templateName" class="text-sm font-medium text-gray-700">Save as:</label>
-                     <input type="text" id="templateName" placeholder="Template Name (e.g., RE_Config_MySetup)"
-                            class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                     <input type="text" id="templateName" placeholder="Template Name (e.g., RE_Config_MySetup)" class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
                      <button onclick="saveTemplate()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded-md text-sm">Save Template</button>
                 </div>
                 <p class="text-xs text-gray-500 mt-1">Filename will be saved as <code>./config_templates/&lt;Template Name&gt;.json</code>.</p>
@@ -130,7 +166,7 @@ TEMPLATE_MANAGER_HTML = """
 
     {# --- JavaScript Section --- #}
     <script>
-      // Initialize Lucide icons used in the template
+      // Initialize Lucide icons
       lucide.createIcons();
 
       // --- DOM Element References ---
@@ -143,71 +179,56 @@ TEMPLATE_MANAGER_HTML = """
       const refApiErrorEl = document.getElementById('refApiError');
 
       // --- State Variable ---
-      let currentEditingTemplate = null; // Track which template filename is currently loaded in the editor
+      let currentEditingTemplate = null; // Track which template filename is loaded
 
        // --- Utility: Message Display ---
       function showMessage(text, isError = false) {
-          // Displays a feedback message (success or error) in the message area.
           messageAreaEl.textContent = text;
-          // Apply appropriate styling based on whether it's an error
           messageAreaEl.className = `mb-4 p-3 rounded-md text-sm ${isError ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-green-100 text-green-700 border border-green-300'}`;
-          // Auto-hide message after 5 seconds for better UX
-          setTimeout(() => { messageAreaEl.textContent = ''; messageAreaEl.className = 'mb-4'; }, 5000);
+          setTimeout(() => { messageAreaEl.textContent = ''; messageAreaEl.className = 'mb-4'; }, 5000); // Auto-hide
       }
 
       // --- Template Loading Functions ---
       async function loadTemplateList() {
-          // Fetches the list of template filenames from the backend and populates the UI list.
-          templateListEl.innerHTML = '<li class="text-gray-500 italic">Loading...</li>'; // Show loading indicator
+          // Fetches and displays the list of templates.
+          templateListEl.innerHTML = '<li class="text-gray-500 italic">Loading...</li>';
           try {
-              // Fetch list from the backend endpoint
               const response = await fetch('{{ url_for("templates.list_templates") }}');
-              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-              const templates = await response.json(); // Expecting list of filenames
-
-              templateListEl.innerHTML = ''; // Clear loading/previous list
+              if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const templates = await response.json();
+              templateListEl.innerHTML = ''; // Clear list
               if (templates.length === 0) {
                   templateListEl.innerHTML = '<li class="text-gray-500 italic">No templates found. Create one!</li>';
               } else {
-                  // Create list items for each template with view/edit and delete buttons
                   templates.forEach(filename => {
                       const li = document.createElement('li');
                       li.className = 'flex justify-between items-center text-sm border-b pb-1';
-                      const baseName = filename.replace('.json', ''); // Display name without extension
-
-                      // Template name (clickable to load)
+                      const baseName = filename.replace('.json', '');
                       const nameSpan = document.createElement('span');
                       nameSpan.textContent = baseName;
                       nameSpan.className = 'cursor-pointer hover:text-indigo-600';
-                      nameSpan.onclick = () => loadTemplateContent(filename); // Load content on click
-
-                      // Action buttons container
+                      nameSpan.onclick = () => loadTemplateContent(filename);
                       const actionsDiv = document.createElement('div');
                       actionsDiv.className = 'space-x-2';
-
-                      // View/Edit Button
                       const viewButton = document.createElement('button');
                       viewButton.innerHTML = '<i data-lucide="eye" class="w-4 h-4 text-blue-500 hover:text-blue-700"></i>';
                       viewButton.title = 'View/Edit';
-                      viewButton.onclick = () => loadTemplateContent(filename); // Load content on click
-
-                      // Delete Button
+                      viewButton.onclick = () => loadTemplateContent(filename);
                       const deleteButton = document.createElement('button');
                       deleteButton.innerHTML = '<i data-lucide="trash-2" class="w-4 h-4 text-red-500 hover:text-red-700"></i>';
                       deleteButton.title = 'Delete';
-                      deleteButton.onclick = () => deleteTemplate(filename); // Trigger delete confirmation
-
-                      // Assemble the list item
+                      deleteButton.onclick = () => deleteTemplate(filename);
                       actionsDiv.appendChild(viewButton);
                       actionsDiv.appendChild(deleteButton);
                       li.appendChild(nameSpan);
                       li.appendChild(actionsDiv);
                       templateListEl.appendChild(li);
-                  });
-                  lucide.createIcons(); // Re-render Lucide icons after adding them
+                   });
+                  lucide.createIcons(); // Render icons
               }
           } catch (error) {
-              // Handle errors during template list loading
               console.error('Error loading template list:', error);
               templateListEl.innerHTML = '<li class="text-red-600 italic">Error loading templates.</li>';
               showMessage('Failed to load template list.', true);
@@ -215,83 +236,69 @@ TEMPLATE_MANAGER_HTML = """
       }
 
       async function loadTemplateContent(filename) {
-          // Fetches the content of a specific template file and displays it in the editor.
-          currentEditingTemplate = filename; // Track the file being edited
+          // Loads the content of a selected template into the editor.
+          currentEditingTemplate = filename;
           const baseName = filename.replace('.json', '');
-          templateNameEl.value = baseName; // Populate the name input field
-          templateContentEl.value = 'Loading...'; // Indicate loading in textarea
-           messageAreaEl.textContent = ''; // Clear previous messages
+          templateNameEl.value = baseName;
+          templateContentEl.value = 'Loading...';
+           messageAreaEl.textContent = ''; // Clear messages
           try {
-              // Construct URL safely using placeholder replacement
               const url = `{{ url_for("templates.get_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", encodeURIComponent(filename));
               const response = await fetch(url);
-              if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-              const content = await response.json(); // Expecting JSON content
-              // Display JSON nicely formatted in the textarea
-              templateContentEl.value = JSON.stringify(content, null, 2);
+              if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const content = await response.json();
+              templateContentEl.value = JSON.stringify(content, null, 2); // Pretty print
           } catch (error) {
-              // Handle errors loading template content
               console.error(`Error loading template ${filename}:`, error);
               templateContentEl.value = `Error loading template: ${error.message}`;
               showMessage(`Failed to load template '${baseName}'.`, true);
-              currentEditingTemplate = null; // Reset editing state on error
+              currentEditingTemplate = null;
           }
       }
 
       // --- Template Saving Function ---
       async function saveTemplate() {
-          // Saves the content of the editor to a JSON file on the server.
+          // Saves the editor content as a template file.
           const name = templateNameEl.value.trim();
           const content = templateContentEl.value.trim();
-           messageAreaEl.textContent = ''; // Clear previous messages
-
-          // Basic filename validation
+           messageAreaEl.textContent = '';
           if (!name) {
               showMessage('Template name cannot be empty.', true);
               templateNameEl.focus();
               return;
           }
-           // Prevent directory traversal or invalid characters
           if (/[\\/]/.test(name)) {
-             showMessage('Template name contains invalid characters (\\ or /).', true);
-             templateNameEl.focus();
-             return;
+              showMessage('Template name contains invalid characters (\\ or /).', true);
+              templateNameEl.focus();
+              return;
           }
-
-          // Validate JSON content before sending
           let jsonData;
           try {
-              jsonData = JSON.parse(content);
-          } catch (error) {
-              showMessage(`Invalid JSON format in editor: ${error.message}`, true);
+              jsonData = JSON.parse(content); // Validate JSON
+          }
+          catch (error) {
+              showMessage(`Invalid JSON format: ${error.message}`, true);
               templateContentEl.focus();
               return;
           }
-
-          // Construct filename
           const filename = name + '.json';
-
           try {
-              // Send POST request to the save endpoint
               const response = await fetch('{{ url_for("templates.save_template") }}', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  // Send filename and the parsed JSON content
                   body: JSON.stringify({ filename: filename, content: jsonData })
               });
-              const result = await response.json(); // Expecting {message: ...} or {error: ...}
-
+              const result = await response.json();
               if (response.ok) {
                   showMessage(result.message || 'Template saved successfully.');
-                  loadTemplateList(); // Refresh the list of templates
-                  // Keep content in editor for further edits or clear it:
-                  // loadTemplateContent(filename); // Option: reload saved content
-              } else {
-                  // Handle errors reported by the backend
+                  loadTemplateList();
+              }
+              else {
                   throw new Error(result.error || `HTTP error! status: ${response.status}`);
               }
           } catch (error) {
-              // Handle network errors or errors parsing the response
               console.error('Error saving template:', error);
               showMessage(`Error saving template: ${error.message}`, true);
           }
@@ -299,38 +306,28 @@ TEMPLATE_MANAGER_HTML = """
 
       // --- Template Deletion Function ---
       async function deleteTemplate(filename) {
-          // Deletes a template file from the server after confirmation.
+          // Deletes a template file after confirmation.
           const baseName = filename.replace('.json', '');
-          // Confirm deletion with the user
-          if (!confirm(`Are you sure you want to delete the template "${baseName}"? This action cannot be undone.`)) {
+          if (!confirm(`Are you sure you want to delete the template "${baseName}"?`)) {
               return;
           }
-           messageAreaEl.textContent = ''; // Clear previous messages
-
+           messageAreaEl.textContent = '';
           try {
-               // Construct URL safely using placeholder replacement
               const url = `{{ url_for("templates.delete_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", encodeURIComponent(filename));
-              // Send DELETE request (or POST if DELETE causes issues)
-              const response = await fetch(url, {
-                  method: 'DELETE'
-              });
-              const result = await response.json(); // Expecting {message: ...} or {error: ...}
-
+              const response = await fetch(url, { method: 'DELETE' });
+              const result = await response.json();
               if (response.ok) {
                   showMessage(result.message || 'Template deleted successfully.');
-                  loadTemplateList(); // Refresh the list
-                  // If the deleted template was loaded in the editor, clear the editor
+                  loadTemplateList();
                   if (currentEditingTemplate === filename) {
                       templateNameEl.value = '';
                       templateContentEl.value = '';
                       currentEditingTemplate = null;
                   }
               } else {
-                   // Handle errors reported by the backend
                   throw new Error(result.error || `HTTP error! status: ${response.status}`);
               }
           } catch (error) {
-              // Handle network errors or errors parsing the response
               console.error(`Error deleting template ${filename}:`, error);
               showMessage(`Error deleting template '${baseName}': ${error.message}`, true);
           }
@@ -338,54 +335,41 @@ TEMPLATE_MANAGER_HTML = """
 
       // --- Reference API Fetcher Function ---
        async function fetchReferenceApi() {
-            // Fetches example data from a user-provided URL via a server-side proxy.
+           // Fetches example API data via the backend proxy.
             const url = refApiUrlEl.value.trim();
-            // Clear previous results/errors
             refApiResultEl.style.display = 'none';
             refApiResultEl.textContent = '';
             refApiErrorEl.textContent = '';
-
             if (!url) {
                 refApiErrorEl.textContent = 'Please enter an API URL.';
                 return;
             }
-
-            // Show fetching indicator
             refApiResultEl.textContent = 'Fetching...';
             refApiResultEl.style.display = 'block';
-
             try {
-                // Call the backend proxy endpoint
                 const response = await fetch('{{ url_for("templates.proxy_api_fetch") }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    // Send the target URL in the request body
                     body: JSON.stringify({ url: url })
                 });
-                const result = await response.json(); // Expecting {data: ...} or {error: ...}
-
+                const result = await response.json();
                 if (response.ok && result.data) {
-                    // Display the fetched data pretty-printed
-                    refApiResultEl.textContent = JSON.stringify(result.data, null, 2);
+                    refApiResultEl.textContent = JSON.stringify(result.data, null, 2); // Pretty print
                 } else {
-                     // Handle errors reported by the proxy or the target API
-                     throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                    throw new Error(result.error || `HTTP error! status: ${response.status}`);
                 }
             } catch (error) {
-                 // Handle network errors or errors parsing the response
                  console.error('Error fetching reference API:', error);
                  refApiResultEl.textContent = '';
                  refApiResultEl.style.display = 'none';
                  refApiErrorEl.textContent = `Error fetching API: ${error.message}`;
-                 // Optionally show error in main message area too
-                 // showMessage(`Failed to fetch reference API: ${error.message}`, true);
+                 showMessage(`Failed to fetch reference API: ${error.message}`, true);
             }
        }
 
 
       // --- Initial Load ---
-      // Load the list of templates when the page DOM is ready
-      document.addEventListener('DOMContentLoaded', loadTemplateList);
+      document.addEventListener('DOMContentLoaded', loadTemplateList); // Load template list when page is ready
 
     </script>
 </body>
@@ -499,8 +483,8 @@ def save_template():
              abort(400, description="Filename must be a non-empty string.")
         if not filename.lower().endswith('.json'):
              abort(400, description="Filename must end with .json")
-        # Prevent path traversal and invalid characters
-        if '..' in filename or filename.startswith('/') or os.path.dirname(filename) or any(c in filename for c in r'<>:"|?*'):
+        # Prevent path traversal and invalid characters typically disallowed in filenames
+        if '..' in filename or filename.startswith('/') or os.path.dirname(filename) or any(c in filename for c in r'<>:"|?*\\/'):
              logger.warning(f"Attempted save with invalid filename: {filename}")
              abort(400, description="Invalid characters or path in filename.")
 
@@ -516,12 +500,12 @@ def save_template():
         is_update = os.path.exists(filepath)
         action = "Updated" if is_update else "Created"
 
-        # Write the JSON content to the file, pretty-printed
+        # Write the JSON content to the file, pretty-printed with indent=2
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(content, f, indent=2)
 
         logger.info(f"{action} template file: {filepath}")
-        # Return success message
+        # Return success message with appropriate HTTP status code
         return jsonify({"message": f"Template '{base_name}' saved successfully."}), 200 if is_update else 201 # OK or Created
 
     except Exception as e:
