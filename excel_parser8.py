@@ -13,6 +13,9 @@ The 'Skill Expr' output sheet includes separate 'Expression' and
 'Concatenated Key'. The 'Skill_exprs Comparison' sheet also includes
 these separate columns.
 
+Calculates the maximum numeric ID found SEPARATELY for DN (VQ) data and
+Agent Group (Skill/VAG/Expr) data and stores them in a 'Metadata' sheet.
+
 Configuration (file paths, API URLs, sheet layout details) is loaded from
 a 'config.ini' file expected in the same directory.
 """
@@ -31,18 +34,24 @@ from typing import Dict, Any, Optional, Tuple, Set, List
 # --- Constants ---
 CONFIG_FILE = 'config.ini'
 LOG_FILE = 'log.txt'
+METADATA_SHEET_NAME = "Metadata" # Name for the sheet storing max ID
+MAX_DN_ID_LABEL_CELL = "A1"      # Cell Coordinate for Max DN ID Label
+MAX_DN_ID_VALUE_CELL = "B1"      # Cell Coordinate for Max DN ID Value
+MAX_AG_ID_LABEL_CELL = "A2"      # Cell Coordinate for Max Agent Group ID Label
+MAX_AG_ID_VALUE_CELL = "B2"      # Cell Coordinate for Max Agent Group ID Value
+
 
 # --- Logging Setup ---
 # Configure logging to file and console
 logging.basicConfig(
-    level=logging.DEBUG, # Set root logger level to capture all messages
+    level=logging.INFO, # Set root logger level (can be DEBUG for more detail)
     format='%(asctime)s - %(levelname)s - [%(funcName)s] - %(message)s',
     handlers=[
         logging.FileHandler(LOG_FILE, mode='w'), # Overwrite log file each run
         logging.StreamHandler() # Log to console (stderr by default)
     ]
 )
-# Set console handler to show only INFO level and above for cleaner output
+# Adjust console handler level if needed (e.g., only show INFO+)
 for handler in logging.getLogger().handlers:
     if isinstance(handler, logging.StreamHandler):
         handler.setLevel(logging.INFO)
@@ -75,32 +84,41 @@ def load_configuration(config_path: str) -> Dict[str, Any]:
     try:
         config.read(config_path, encoding='utf-8') # Specify encoding
 
-        # Read sections and keys, providing clear error messages if missing
+        # Define required and optional settings
         settings = {}
         required_sections = {
             'Files': ['source_file'],
             'API': ['dn_url', 'agent_group_url'],
             'SheetLayout': ['ideal_agent_header_text', 'ideal_agent_fallback_cell', 'vag_extraction_sheet']
         }
-        optional_settings = {('API', 'timeout', 15)} # (section, key, fallback)
+        # Define optional settings as tuples: (section, key, fallback_value)
+        optional_settings_spec = {('API', 'timeout', 15)} # Note: key is 'timeout' here
 
+        # Read required settings
         for section, keys in required_sections.items():
             if not config.has_section(section):
                  raise ValueError(f"Missing section '{section}' in configuration file.")
             for key in keys:
                  if not config.has_option(section, key):
                       raise ValueError(f"Missing option '{key}' in section '[{section}]'.")
+                 # Read value as string initially
                  settings[key] = config.get(section, key)
 
         # Read optional settings
-        for section, key, fallback in optional_settings:
+        for section, key, fallback in optional_settings_spec:
             if config.has_option(section, key):
-                if key == 'timeout': # Example of type conversion
-                    settings[key] = config.getint(section, key)
+                # Perform type conversion if needed
+                if key == 'timeout':
+                    # Store with the key 'api_timeout' for clarity later
+                    settings['api_timeout'] = config.getint(section, key)
                 else:
                     settings[key] = config.get(section, key)
             else:
-                settings[key] = fallback
+                # Use fallback value if option is missing, store with 'api_timeout' key
+                if key == 'timeout':
+                    settings['api_timeout'] = fallback
+                else:
+                    settings[key] = fallback
                 logging.debug(f"Optional setting '{key}' not found in '[{section}]', using fallback: {fallback}")
 
 
@@ -144,18 +162,22 @@ def copy_cell_style(source_cell: openpyxl.cell.Cell, target_cell: openpyxl.cell.
     """
     if source_cell.has_style:
         # Copy Font properties
-        target_cell.font = Font(name=source_cell.font.name,
-                                size=source_cell.font.size,
-                                bold=source_cell.font.bold,
-                                italic=source_cell.font.italic,
-                                vertAlign=source_cell.font.vertAlign,
-                                underline=source_cell.font.underline,
-                                strike=source_cell.font.strike,
-                                color=source_cell.font.color)
+        target_cell.font = Font(
+            name=source_cell.font.name,
+            size=source_cell.font.size,
+            bold=source_cell.font.bold,
+            italic=source_cell.font.italic,
+            vertAlign=source_cell.font.vertAlign,
+            underline=source_cell.font.underline,
+            strike=source_cell.font.strike,
+            color=source_cell.font.color
+        )
         # Copy Fill properties
-        target_cell.fill = PatternFill(fill_type=source_cell.fill.fill_type,
-                                       start_color=source_cell.fill.start_color,
-                                       end_color=source_cell.fill.end_color)
+        target_cell.fill = PatternFill(
+            fill_type=source_cell.fill.fill_type,
+            start_color=source_cell.fill.start_color,
+            end_color=source_cell.fill.end_color
+        )
         # Copy Alignment properties
         if source_cell.alignment:
             target_cell.alignment = openpyxl.styles.Alignment(
@@ -248,57 +270,74 @@ def extract_skills(expression: str) -> list[str]:
 
 
 # --- API Interaction ---
-def fetch_api_data(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def fetch_api_data(config: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], int, int]:
     """
-    Fetches routing entity data (VQs, Skills, VAGs, Skill Expressions)
-    from APIs specified in the configuration. Stores detailed info for skill expressions.
+    Fetches routing entity data from APIs specified in the configuration.
+    Calculates the maximum numeric ID found SEPARATELY for DN and Agent Group sources.
+    Stores detailed info for skill expressions.
 
     Args:
         config: The loaded configuration dictionary.
 
     Returns:
-        A dictionary containing the fetched API data. Structure varies by key:
-        {
-            "vqs": {norm_name: id_str},
-            "skills": {norm_name: id_str},
-            "vags": {norm_name: id_str},
-            "skill_exprs": {concat_key: {"id": id_str, "expr": expr_str, "ideal": ideal_str}}
-        }
+        A tuple containing:
+        - api_data: Dictionary containing the fetched API data. Structure varies by key.
+        - max_dn_id: The highest numeric ID found in the DN API data (or 0).
+        - max_ag_id: The highest numeric ID found in the Agent Group API data (or 0).
     """
     logging.info("Fetching API data...")
-    dn_url = config['dn_api_url']
+    # Use correct keys from config dict as stored by load_configuration
+    dn_url = config['dn_url']
     agent_group_url = config['agent_group_url']
     timeout = config['api_timeout']
 
     api_data = {"vqs": {}, "skills": {}, "skill_exprs": {}, "vags": {}}
+    # Separate Max ID counters
+    max_dn_id = 0
+    max_ag_id = 0
 
+    # Initialize JSON variables in case requests fail
+    dn_json = []
+    ag_json = []
+
+    # Fetch DN (VQ) data
     try:
-        # Fetch DN (VQ) data
         logging.debug(f"Fetching DN data from {dn_url} with timeout={timeout}s")
         dn_response = requests.get(dn_url, timeout=timeout)
         dn_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
         dn_json = dn_response.json()
         logging.info(f"Successfully fetched DN response ({len(dn_json)} items).")
+    except requests.exceptions.Timeout:
+         logging.error(f"API request timed out for DN URL after {timeout} seconds.")
+         print(f"ERROR: API request timed out for DN URL. Check URL and network.")
+         # Continue to try fetching AG data, max_dn_id remains 0
+    except requests.exceptions.RequestException as e:
+        logging.error(f"API fetch failed for DN URL: {e}")
+        print(f"ERROR: Failed to fetch data from DN API. Check URL and network. Details in {LOG_FILE}.")
+        # Continue to try fetching AG data, max_dn_id remains 0
 
-        # Fetch Agent Group data
+    # Fetch Agent Group data
+    try:
         logging.debug(f"Fetching Agent Group data from {agent_group_url} with timeout={timeout}s")
         ag_response = requests.get(agent_group_url, timeout=timeout)
         ag_response.raise_for_status()
         ag_json = ag_response.json()
         logging.info(f"Successfully fetched Agent Group response ({len(ag_json)} items).")
-
     except requests.exceptions.Timeout:
-         logging.error(f"API request timed out after {timeout} seconds.")
-         print(f"ERROR: API request timed out. Check API URLs and network connectivity.")
-         return api_data # Return empty dicts on timeout
+         logging.error(f"API request timed out for Agent Group URL after {timeout} seconds.")
+         print(f"ERROR: API request timed out for Agent Group URL. Check URL and network.")
+         # Return current api_data and calculated max IDs (max_ag_id will be 0)
+         return api_data, max_dn_id, max_ag_id
     except requests.exceptions.RequestException as e:
-        logging.error(f"API fetch failed: {e}")
-        print(f"ERROR: Failed to fetch data from APIs. Check URLs and network. Details in {LOG_FILE}.")
-        return api_data # Return empty dicts on other request errors
+        logging.error(f"API fetch failed for Agent Group URL: {e}")
+        print(f"ERROR: Failed to fetch data from Agent Group API. Check URL and network. Details in {LOG_FILE}.")
+         # Return current api_data and calculated max IDs (max_ag_id will be 0)
+        return api_data, max_dn_id, max_ag_id
+
 
     # --- Process DN (VQ) data ---
     vq_count = 0
-    for item in dn_json:
+    for item in dn_json: # Use the fetched dn_json
         data = item.get('data', {})
         vq_name = data.get('name')
         vq_id = data.get('id') # API might return int or string ID
@@ -306,17 +345,24 @@ def fetch_api_data(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         if vq_name and vq_id is not None:
             # Normalize name: remove spaces and non-breaking spaces (\u00A0)
             normalized_vq = vq_name.replace(" ", "").replace('\u00A0', '')
-            api_data["vqs"][normalized_vq] = str(vq_id) # Store ID as string for consistency
-            logging.debug(f"Processed VQ: Name='{normalized_vq}', ID='{vq_id}'")
+            id_str = str(vq_id) # Store ID as string for consistency
+            api_data["vqs"][normalized_vq] = id_str
+            # --- Calculate Max DN ID ---
+            # Check if the ID is numeric and update max_dn_id if it's larger
+            if id_str.isdigit():
+                max_dn_id = max(max_dn_id, int(id_str))
+            # --- End Calculate Max DN ID ---
+            logging.debug(f"Processed VQ: Name='{normalized_vq}', ID='{id_str}'")
             vq_count += 1
         else:
             logging.warning(f"Skipping DN item due to missing name or id: {item}")
-    logging.info(f"Processed {vq_count} VQs from API.")
+    logging.info(f"Processed {vq_count} VQs from API. Max DN ID found: {max_dn_id}")
+
 
     # --- Process Agent Group (Skill, Skill Expr, VAG) data ---
     skill_count, expr_count, vag_count = 0, 0, 0
     skipped_ag_count = 0
-    for item in ag_json:
+    for item in ag_json: # Use the fetched ag_json
         data = item.get('data', {})
         ag_id = data.get('id')
         expression = data.get('expression', '') or '' # Ensure string, default to empty
@@ -329,8 +375,13 @@ def fetch_api_data(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             continue
         ag_id_str = str(ag_id) # Store ID as string
 
+        # --- Calculate Max AG ID ---
+        # Check if the ID is numeric and update max_ag_id if it's larger
+        if ag_id_str.isdigit():
+            max_ag_id = max(max_ag_id, int(ag_id_str))
+        # --- End Calculate Max AG ID ---
+
         # Normalize expressions: remove spaces, add spaces around operators for consistency
-        # This helps match sheet data which is similarly normalized
         norm_expr = expression.replace(" ", "").replace('\u00A0', '').replace("|", " | ").replace("&", " & ")
         norm_ideal = ideal_expression.replace(" ", "").replace('\u00A0', '').replace("|", " | ").replace("&", " & ")
 
@@ -370,8 +421,9 @@ def fetch_api_data(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
              skipped_ag_count += 1
 
     logging.info(f"Processed Agent Groups from API: Skills={skill_count}, SkillExprs={expr_count}, VAGs={vag_count}. Skipped={skipped_ag_count}.")
-    logging.info("Finished parsing API data.")
-    return api_data
+    logging.info(f"Finished parsing API data. Max Agent Group ID found: {max_ag_id}")
+    # Return the structured data and BOTH max IDs
+    return api_data, max_dn_id, max_ag_id
 
 
 # --- Core Processing Logic ---
@@ -388,14 +440,15 @@ def process_sheet(
     Args:
         sheet: The openpyxl worksheet object to process.
         intermediate_data: The dictionary holding collected data across sheets.
-                           Structure: {"vqs": {name: details}, "skills": {name: details}, ...}
-                           Details: {"strike": bool, "style_cell": Cell, "expr": str?, "ideal": str?}
         config: The loaded configuration dictionary.
     """
-    # Define sheets to skip (can be moved to config if needed)
-    excluded_sheets = {"Skill Expr", "VQ", "VAG", "Skills",
-                       "Vqs Comparison", "Skills Comparison",
-                       "Skill_exprs Comparison", "Vags Comparison"}
+    # Define sheets to skip (output, comparison, metadata)
+    excluded_sheets = {
+        "Skill Expr", "VQ", "VAG", "Skills",
+        "Vqs Comparison", "Skills Comparison",
+        "Skill_exprs Comparison", "Vags Comparison",
+        METADATA_SHEET_NAME # Ensure metadata sheet is skipped
+    }
     if sheet.title in excluded_sheets:
         logging.debug(f"Skipping sheet: {sheet.title} (excluded name)")
         return
@@ -455,7 +508,9 @@ def process_sheet(
 
                 # Create the concatenated key used for comparison and storage
                 concatenated_value = f"{formatted_expr} {ideal_agent_value}".strip()
-                if not concatenated_value: continue # Skip if key becomes empty after processing
+                if not concatenated_value:
+                    # Skip if the key becomes empty after processing (e.g., only operators left)
+                    continue
 
                 # Update intermediate_data for skill_exprs directly (handles strike rule)
                 skill_expr_dict = intermediate_data["skill_exprs"]
@@ -523,11 +578,8 @@ def collect_routing_entities(
     # --- Intermediate Data Structure ---
     # Stores details for each unique item found across all sheets
     intermediate_data = {
-        "vqs": {},         # {"VQ_Name": {"strike": bool, "style_cell": CellObject}}
-        "skills": {},      # {"SkillName": {"strike": bool, "style_cell": CellObject}}
-        "skill_exprs": {}, # {"Concat Key": {"strike": bool, "style_cell": Cell, "expr": str, "ideal": str}}
-        "vags": {}         # {"VAG_Name": {"strike": bool, "style_cell": CellObject}}
-    }
+        "vqs": {}, "skills": {}, "skill_exprs": {}, "vags": {}
+    } # Format: {"Type": {"Name/Key": {"strike": bool, "style_cell": Cell, "expr"?: str, "ideal"?: str}}}
 
     # --- Phase 1: Process all sheets and populate intermediate_data ---
     for sheet in workbook.worksheets:
@@ -547,9 +599,12 @@ def collect_routing_entities(
 
     # Define names for comparison sheets to ensure they are removed
     comparison_prefixes = {"Skill Expr": "Skill_exprs", "VQ": "Vqs", "VAG": "Vags", "Skills": "Skills"}
-    sheets_to_remove = list(output_sheet_specs.keys()) + [f"{comparison_prefixes[t]} Comparison" for t in output_sheet_specs.keys()]
+    # List all sheets to remove (output, comparison, metadata)
+    sheets_to_remove = list(output_sheet_specs.keys()) + \
+                       [f"{comparison_prefixes[t]} Comparison" for t in output_sheet_specs.keys()] + \
+                       [METADATA_SHEET_NAME]
 
-    # Remove old output/comparison sheets before creating new ones
+    # Remove old output/comparison/metadata sheets before creating new ones
     for sheet_name in sheets_to_remove:
          if sheet_name in workbook.sheetnames:
              try:
@@ -623,7 +678,6 @@ def write_comparison_sheet(
     # Basic checks for empty data
     if not api_data:
         logging.warning("API data is empty or None, skipping comparison writing.")
-        # Optionally create empty comparison sheets? For now, just return.
         return
     if not sheet_data:
         logging.warning("Sheet data for comparison is empty or None, skipping comparison writing.")
@@ -657,21 +711,23 @@ def write_comparison_sheet(
         # --- Set Headers and Column Widths based on key ---
         if key == "skill_exprs":
             headers = ["Concatenated Key", "Expression", "Ideal Expression", "ID (from API)", "Status"]
-            # Adjust widths as needed
+            # Adjust widths as needed for better viewing
             col_widths = [45, 45, 35, 20, 35]
         else:
             # Use the sheet_title_prefix (e.g., "Vqs", "Skills") as the first column header
             headers = [sheet_title_prefix, "ID (from API)", "Status"]
             col_widths = [45, 20, 35]
 
+        # Write headers and apply formatting
         for col_idx, header in enumerate(headers, start=1):
             cell = sheet.cell(row=1, column=col_idx, value=header)
             cell.font = Font(bold=True)
             # Set column width for better readability
             try:
-                sheet.column_dimensions[openpyxl_cell_utils.get_column_letter(col_idx)].width = col_widths[col_idx-1]
+                column_letter = openpyxl_cell_utils.get_column_letter(col_idx)
+                sheet.column_dimensions[column_letter].width = col_widths[col_idx-1]
             except IndexError: # Just in case col_widths definition has issues
-                 pass
+                 pass # Ignore error if width definition is wrong
 
 
         # --- Write Data Rows ---
@@ -681,12 +737,12 @@ def write_comparison_sheet(
             # Sort items alphabetically for consistent report order
             for item_key in sorted(list(new_in_sheet)):
                 if key == "skill_exprs":
-                    # Lookup details from intermediate_data (originates from sheet)
+                    # Lookup details from intermediate_data (originates from sheet processing)
                     item_details = intermediate_data['skill_exprs'].get(item_key, {})
                     sheet.cell(row=row_num, column=1, value=item_key) # Concatenated Key
                     sheet.cell(row=row_num, column=2, value=item_details.get('expr', '')) # Expression
                     sheet.cell(row=row_num, column=3, value=item_details.get('ideal', '')) # Ideal Expression
-                    sheet.cell(row=row_num, column=4, value="N/A") # ID
+                    sheet.cell(row=row_num, column=4, value="N/A") # ID (Not applicable as it's not from API)
                     sheet.cell(row=row_num, column=5, value="New in Sheet (Non-Struck)") # Status
                 else:
                     # Standard 3-column layout for VQ, Skill, VAG
@@ -707,16 +763,16 @@ def write_comparison_sheet(
                     # api_items_dict is api_data['skill_exprs'] here
                     api_details = api_items_dict.get(item_key, {}) # api_details is {'id': ..., 'expr': ..., 'ideal': ...}
                     sheet.cell(row=row_num, column=1, value=item_key) # Concatenated Key
-                    sheet.cell(row=row_num, column=2, value=api_details.get('expr', '')) # Expression
-                    sheet.cell(row=row_num, column=3, value=api_details.get('ideal', '')) # Ideal Expression
-                    sheet.cell(row=row_num, column=4, value=api_details.get('id', 'ID Not Found')) # ID
+                    sheet.cell(row=row_num, column=2, value=api_details.get('expr', '')) # Expression from API
+                    sheet.cell(row=row_num, column=3, value=api_details.get('ideal', '')) # Ideal Expression from API
+                    sheet.cell(row=row_num, column=4, value=api_details.get('id', 'ID Not Found')) # ID from API
                     sheet.cell(row=row_num, column=5, value="Missing in Sheet (or only Struck Out)") # Status
                 else:
                     # Standard 3-column layout for VQ, Skill, VAG
                     # api_items_dict is api_data['vqs'], etc. here, value is just the ID string
                     api_id = api_items_dict.get(item_key, "ID Not Found") # api_id is just the string ID here
                     sheet.cell(row=row_num, column=1, value=item_key) # Item Name
-                    sheet.cell(row=row_num, column=2, value=api_id) # ID
+                    sheet.cell(row=row_num, column=2, value=api_id) # ID from API
                     sheet.cell(row=row_num, column=3, value="Missing in Sheet (or only Struck Out)") # Status
                 row_num += 1
         else:
@@ -733,7 +789,6 @@ def main():
         config = load_configuration(CONFIG_FILE)
         source_file_path = config['source_file']
     except (FileNotFoundError, ValueError, configparser.Error) as config_e:
-        # Log configuration errors and exit gracefully
         logging.error(f"Halting execution due to configuration error: {config_e}")
         print(f"FATAL: Configuration Error - {config_e}. See {LOG_FILE} for details.")
         return # Stop execution
@@ -746,17 +801,15 @@ def main():
     logging.info(f"Source Workbook: '{source_file_path}'")
     logging.info(f"Output Workbook: '{final_output_path}'")
 
-    # Create a working copy of the source .xlsx file to avoid modifying the original
+    # Create a working copy of the source .xlsx file
     try:
         shutil.copyfile(source_file_path, final_output_path)
         logging.info(f"Copied source to '{final_output_path}' for processing.")
     except FileNotFoundError:
-         # Handle case where source file specified in config doesn't exist
          logging.error(f"Source file not found: '{source_file_path}'. Cannot proceed.")
          print(f"FATAL: Source file '{source_file_path}' not found.")
          return
     except Exception as e:
-        # Handle other potential file copying errors
         logging.error(f"Error copying file '{source_file_path}' to '{final_output_path}': {e}", exc_info=True)
         print(f"FATAL: Error copying source file. See {LOG_FILE} for details.")
         return
@@ -765,27 +818,43 @@ def main():
     try:
         # --- Load the copied workbook ---
         logging.info(f"Loading workbook: {final_output_path}")
-        # Use read_only=False, data_only=False to access styles and potentially formulas
         workbook = openpyxl.load_workbook(final_output_path, read_only=False, data_only=False)
 
-        # --- Step 1: Collect data from Excel sheets ---
-        # This function modifies the workbook object by adding output sheets
-        # It returns data needed for comparison and the full intermediate data
+        # --- Step 1: Fetch API data AND Separate Max IDs ---
+        # fetch_api_data now returns api_data, max_dn_id, max_ag_id
+        api_data, max_dn_id, max_ag_id = fetch_api_data(config) # Unpack both IDs
+        if not any(api_data.values()):
+            logging.warning("API data fetch resulted in empty or partially empty datasets. Max IDs might be inaccurate.")
+
+        # --- Step 2: Collect data from Excel sheets ---
+        # This modifies the workbook by adding output sheets
         sheet_data_for_comparison, intermediate_data = collect_routing_entities(workbook, config)
 
-        # --- Step 2: Fetch data from APIs ---
-        api_data = fetch_api_data(config)
-        # Check if API data fetch was successful (optional: add more robust checks)
-        if not any(api_data.values()):
-            logging.warning("API data fetch resulted in empty or partially empty datasets. Comparison might be incomplete.")
-            # Decide whether to continue or stop if API data is crucial
-            # For now, we continue and the comparison will show everything as 'New in Sheet' or handle empty API data.
-
         # --- Step 3: Perform comparison and write comparison sheets ---
-        # This function modifies the workbook object by adding comparison sheets
+        # This modifies the workbook by adding comparison sheets
         write_comparison_sheet(workbook, sheet_data_for_comparison, api_data, intermediate_data)
 
-        # --- Step 4: Save the processed workbook ---
+        # --- Step 4: Write Metadata (Separate Max IDs) ---
+        # Create or get the Metadata sheet
+        if METADATA_SHEET_NAME in workbook.sheetnames:
+            metadata_sheet = workbook[METADATA_SHEET_NAME]
+            logging.debug(f"Using existing '{METADATA_SHEET_NAME}' sheet.")
+        else:
+            metadata_sheet = workbook.create_sheet(title=METADATA_SHEET_NAME)
+            logging.debug(f"Created new '{METADATA_SHEET_NAME}' sheet.")
+
+        # Write labels and values for both Max IDs
+        metadata_sheet[MAX_DN_ID_LABEL_CELL] = "Max DN API ID Found"
+        metadata_sheet[MAX_DN_ID_LABEL_CELL].font = Font(bold=True)
+        metadata_sheet[MAX_DN_ID_VALUE_CELL] = max_dn_id
+        logging.info(f"Wrote Max DN API ID ({max_dn_id}) to '{METADATA_SHEET_NAME}' sheet, cell {MAX_DN_ID_VALUE_CELL}.")
+
+        metadata_sheet[MAX_AG_ID_LABEL_CELL] = "Max AgentGroup API ID Found"
+        metadata_sheet[MAX_AG_ID_LABEL_CELL].font = Font(bold=True)
+        metadata_sheet[MAX_AG_ID_VALUE_CELL] = max_ag_id
+        logging.info(f"Wrote Max AgentGroup API ID ({max_ag_id}) to '{METADATA_SHEET_NAME}' sheet, cell {MAX_AG_ID_VALUE_CELL}.")
+
+        # --- Step 5: Save the processed workbook ---
         logging.info(f"Saving final processed workbook to: {final_output_path}")
         workbook.save(final_output_path)
         logging.info(f"Successfully saved processed workbook.")
@@ -804,7 +873,6 @@ def main():
                  workbook.close()
                  logging.debug("Workbook closed.")
              except Exception as close_e:
-                 # This might happen if saving failed, but still log it
                  logging.warning(f"Error closing workbook: {close_e}")
 
 
