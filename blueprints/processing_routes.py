@@ -3,7 +3,9 @@
 Flask Blueprint for handling backend processing tasks and API endpoints.
 
 Includes API endpoints for:
-- Uploading and processing the Excel file (triggering comparison).
+- Uploading the original source Excel file.
+- Triggering the comparison process on an uploaded file.
+- Loading data from an existing processed file.
 - Simulating configuration template application.
 - Confirming and finalizing (simulated) updates.
 - Updating the application configuration.
@@ -13,24 +15,19 @@ import os
 import json
 import logging
 import re
-import shutil # For file operations if needed
-import openpyxl # Needed for loading workbook in processing route
+import shutil
+import openpyxl
 from flask import (
     Blueprint, request, jsonify, current_app, abort, flash, redirect, url_for
 )
-from werkzeug.utils import secure_filename # For secure file uploads
-# --- MODIFICATION START: Import Font ---
-from openpyxl.styles import Font # Required for processing logic
-# --- MODIFICATION END ---
+from werkzeug.utils import secure_filename
+from openpyxl.styles import Font
 from typing import Dict, Any, Optional, Tuple, Set, List
 
 # Import utility functions and constants
 try:
-    # Assuming utils.py is in the parent directory or accessible via Python path
-    from utils import IdGenerator, replace_placeholders, read_comparison_data # Added read_comparison_data
-    # Assuming config.py defines TEMPLATE_DIR or it's passed via app config
-    # For simplicity here, we might redefine or get from app.config
-    TEMPLATE_DIR = './config_templates/'
+    from utils import IdGenerator, replace_placeholders, read_comparison_data
+    TEMPLATE_DIR = './config_templates/' # Get from utils or config? Define here for now.
 except ImportError as e:
     logging.error(f"Failed to import required functions/constants for processing_routes: {e}")
     # Define dummy functions or raise error if critical
@@ -43,12 +40,11 @@ except ImportError as e:
     TEMPLATE_DIR = './config_templates/'
 
 # Import functions from the refactored processing modules
-# These modules contain the core logic previously in excel_comparator.py
 try:
-    from config import save_config # Function to save updated config
-    from excel_processing import collect_routing_entities # Function to process workbook sheets
-    from api_fetching import fetch_api_data # Function to call external APIs
-    from comparison_logic import write_comparison_sheets # Function to write comparison results
+    from config import save_config
+    from excel_processing import collect_routing_entities
+    from api_fetching import fetch_api_data
+    from comparison_logic import write_comparison_sheets
     # Import constants needed within this blueprint's functions
     METADATA_SHEET_NAME = "Metadata"
     MAX_DN_ID_LABEL_CELL = "A1"
@@ -65,31 +61,34 @@ except ImportError as e:
      def collect_routing_entities(w, c, m): raise NotImplementedError("collect_routing_entities not imported")
      def fetch_api_data(c): raise NotImplementedError("fetch_api_data not imported")
      def write_comparison_sheets(w, s, a, i): raise NotImplementedError("write_comparison_sheets not imported")
-     # Redefine constants as fallbacks
+     class IdGenerator:
+        def __init__(self, *args, **kwargs): pass
+        def get_next_dn_id(self): return 0
+        def get_next_ag_id(self): return 0
+     def replace_placeholders(template_data, row_data, current_row_next_id=None): return template_data
+     TEMPLATE_DIR = './config_templates/'
      METADATA_SHEET_NAME = "Metadata"; MAX_DN_ID_LABEL_CELL = "A1"; MAX_DN_ID_VALUE_CELL = "B1"; MAX_AG_ID_LABEL_CELL = "A2"; MAX_AG_ID_VALUE_CELL = "B2"
      DN_SHEETS = set(); AGENT_GROUP_SHEETS = set()
 
 
 # --- Constants ---
-LOG_FILE_UI = 'ui_viewer.log' # Assuming shared log file
-UPLOAD_FOLDER = './uploads' # Define a folder to store uploaded files temporarily
+LOG_FILE_UI = 'ui_viewer.log'
+UPLOAD_FOLDER = './uploads' # Define a folder to store uploaded and processed files
 ALLOWED_EXTENSIONS = {'xlsx'}
 
-# Keys used to identify rows in different comparison sheets (must match ui_viewer.py)
+# Keys used to identify rows in different comparison sheets
 IDENTIFIER_KEYS = {
     "Skill_exprs Comparison": "Concatenated Key",
-    "Vqs Comparison": "Item", # Assuming 'Item' is the first column header read
+    "Vqs Comparison": "Item",
     "Skills Comparison": "Item",
     "Vags Comparison": "Item",
 }
 
 
 # --- Logging ---
-# Use the root logger configured in the main app (app.py)
-logger = logging.getLogger(__name__) # Use module-specific logger
+logger = logging.getLogger(__name__)
 
 # --- Blueprint Definition ---
-# Create a Blueprint named 'processing'. The main app (app.py) will register this with '/api' prefix.
 processing_bp = Blueprint('processing', __name__)
 
 # --- Helper Functions ---
@@ -100,30 +99,19 @@ def allowed_file(filename):
 
 # --- API Routes ---
 
-@processing_bp.route('/upload-process', methods=['POST'])
-def upload_and_process_file():
-    """
-    Handles upload of the *original* Excel file, triggers the comparison process
-    (using imported logic from excel_comparator parts), saves the
-    '*_processed.xlsx' output, and reloads the UI data cache from the output file.
-    Redirects back to the results viewer on completion or error.
-    """
-    logger.info("Received request to upload and process file.")
-    # --- File Upload Handling ---
-    if 'excelFile' not in request.files:
-        flash('No file part in the request.', 'error')
-        logger.warning("File upload request missing 'excelFile' part.")
-        return redirect(url_for('ui.upload_config_page')) # Redirect back to upload page
+@processing_bp.route('/upload-original', methods=['POST'])
+def upload_original_file():
+    """Handles upload of the original source Excel file."""
+    logger.info("Received request to upload original file.")
+    if 'sourceExcelFile' not in request.files: # Check for the correct input name
+        logger.warning("File upload request missing 'sourceExcelFile' part.")
+        return jsonify({"error": "No file part in the request."}), 400
 
-    file = request.files['excelFile']
-    # If the user does not select a file, the browser submits an
-    # empty file without a filename.
+    file = request.files['sourceExcelFile']
     if file.filename == '':
-        flash('No selected file.', 'warning')
         logger.warning("File upload request received with no selected file.")
-        return redirect(url_for('ui.upload_config_page')) # Redirect back to upload page
+        return jsonify({"error": "No selected file."}), 400
 
-    # Check if the file is allowed and process it
     if file and allowed_file(file.filename):
         # Ensure the upload folder exists
         if not os.path.exists(UPLOAD_FOLDER):
@@ -132,133 +120,176 @@ def upload_and_process_file():
                 logger.info(f"Created upload directory: {UPLOAD_FOLDER}")
             except OSError as e:
                  logger.error(f"Could not create upload directory {UPLOAD_FOLDER}: {e}")
-                 flash(f"Server error: Could not create upload directory.", 'error')
-                 return redirect(url_for('ui.upload_config_page'))
+                 return jsonify({"error": f"Server error: Could not create upload directory."}), 500
 
-
-        # Save the uploaded *original* file temporarily or with a unique name
-        original_filename = secure_filename(file.filename) # Sanitize filename
-        # Define path for the output file (will be created by processing)
-        processed_filename = f"{os.path.splitext(original_filename)[0]}_processed.xlsx"
-        processed_filepath = os.path.join(UPLOAD_FOLDER, processed_filename)
-        # Save the original uploaded file (this will be the input for processing)
-        original_filepath = os.path.join(UPLOAD_FOLDER, original_filename) # Path to save original
+        original_filename = secure_filename(file.filename)
+        original_filepath = os.path.join(UPLOAD_FOLDER, original_filename)
 
         try:
             file.save(original_filepath)
             logger.info(f"Uploaded original file saved to: {original_filepath}")
+            # Store the path of the uploaded original file for the run-comparison step
+            # Using session might be better, but app.config is simpler for now
+            current_app.config['LAST_UPLOADED_ORIGINAL_FILE'] = original_filepath
+            return jsonify({
+                "message": f"File '{original_filename}' uploaded successfully.",
+                "original_filename": original_filename # Return filename for potential use in UI
+                }), 200
         except Exception as e:
             logger.error(f"Error saving uploaded file: {e}", exc_info=True)
-            flash(f"An error occurred saving the uploaded file: {e}", 'error')
-            return redirect(url_for('ui.upload_config_page'))
-
-        # --- Trigger Core Comparison Logic (using original_filepath as input) ---
-        logger.info(f"Starting core comparison process using: {original_filepath}")
-        config = current_app.config.get('APP_SETTINGS', {}) # Get loaded app config
-
-        workbook = None # Initialize workbook variable
-        try:
-            # Step 0: Create a working copy for processing (output path)
-            # This ensures the original upload isn't modified directly
-            shutil.copyfile(original_filepath, processed_filepath)
-            logger.info(f"Copied uploaded file to '{processed_filepath}' for processing.")
-
-            # Load the copied workbook for processing
-            logging.info(f"Loading workbook: {processed_filepath}")
-            workbook = openpyxl.load_workbook(processed_filepath, read_only=False, data_only=False)
-
-            # Step 1: Fetch API data AND Separate Max IDs
-            api_data, max_dn_id, max_ag_id = fetch_api_data(config)
-            if not any(api_data.values()):
-                logging.warning("API data fetch resulted in empty/partial datasets.")
-                # Store potentially empty API data for ID generator fallback?
-                # current_app.config['API_DATA_CACHE'] = api_data # Optional
-
-            # Step 2: Collect data from Excel sheets (modifies workbook)
-            sheet_data_for_comparison, intermediate_data = collect_routing_entities(
-                workbook, config, METADATA_SHEET_NAME
-            )
-
-            # Step 3: Perform comparison and write comparison sheets (modifies workbook)
-            write_comparison_sheets(
-                workbook, sheet_data_for_comparison, api_data, intermediate_data
-            )
-
-            # Step 4: Write Metadata sheet (modifies workbook)
-            if METADATA_SHEET_NAME in workbook.sheetnames:
-                metadata_sheet = workbook[METADATA_SHEET_NAME]
-            else:
-                metadata_sheet = workbook.create_sheet(title=METADATA_SHEET_NAME)
-            # Write labels and values
-            metadata_sheet[MAX_DN_ID_LABEL_CELL] = "Max DN API ID Found"
-            metadata_sheet[MAX_DN_ID_LABEL_CELL].font = Font(bold=True) # Use imported Font
-            metadata_sheet[MAX_DN_ID_VALUE_CELL] = max_dn_id
-            metadata_sheet[MAX_AG_ID_LABEL_CELL] = "Max AgentGroup API ID Found"
-            metadata_sheet[MAX_AG_ID_LABEL_CELL].font = Font(bold=True) # Use imported Font
-            metadata_sheet[MAX_AG_ID_VALUE_CELL] = max_ag_id
-            logging.info(f"Wrote Max IDs (DN:{max_dn_id}, AG:{max_ag_id}) to '{METADATA_SHEET_NAME}'.")
-
-            # Step 5: Save the processed workbook
-            workbook.save(processed_filepath)
-            logger.info(f"Successfully saved processed workbook to: {processed_filepath}")
-
-            # --- Update App Cache ---
-            # Clear old cache and reload data from the newly generated processed file
-            logger.info("Reloading application data cache from processed file...")
-            current_app.config['EXCEL_DATA'] = {}
-            current_app.config['EXCEL_FILENAME'] = None
-            current_app.config['COMPARISON_SHEETS'] = []
-            current_app.config['SHEET_HEADERS'] = {}
-            current_app.config['MAX_DN_ID'] = 0
-            current_app.config['MAX_AG_ID'] = 0
-
-            # Use the read_comparison_data function from utils
-            if read_comparison_data(processed_filepath): # Read the new file into cache
-                 flash(f"File '{original_filename}' processed successfully. Max IDs updated.", 'success')
-                 logger.info("Application cache updated successfully.")
-                 # Redirect to the first results page after processing
-                 available_sheets = current_app.config.get('COMPARISON_SHEETS', [])
-                 if available_sheets:
-                     return redirect(url_for('ui.view_comparison', comparison_type=available_sheets[0]))
-                 else:
-                     # If no comparison sheets were generated (maybe error or empty results)
-                     flash("Processing complete, but no comparison sheets were generated.", "warning")
-                     return redirect(url_for('ui.upload_config_page'))
-            else:
-                 # This case indicates an error reading the file we just created
-                 flash(f"File '{original_filename}' processed, but failed to reload data into UI cache. Check logs.", 'error')
-                 logger.error("Failed to reload data cache after processing.")
-                 return redirect(url_for('ui.upload_config_page')) # Stay on upload page
-
-        except Exception as proc_err:
-            # Catch errors during the core processing logic
-            logger.error(f"Error during file processing: {proc_err}", exc_info=True)
-            flash(f"Error processing file '{original_filename}': {proc_err}", 'error')
-            # Redirect back to upload page on processing error
-            return redirect(url_for('ui.upload_config_page'))
-        finally:
-            # Ensure workbook is closed
-            if workbook:
-                try:
-                    workbook.close()
-                    logger.debug("Processing workbook closed.")
-                except Exception as close_e:
-                     logging.warning(f"Error closing processing workbook: {close_e}")
-            # Clean up the original uploaded file? Or keep it?
-            # For now, keep both original and processed in uploads/
-            # if os.path.exists(original_filepath):
-            #     try:
-            #         os.remove(original_filepath)
-            #         logger.info(f"Removed original upload file: {original_filepath}")
-            #     except OSError as rm_err:
-            #         logger.warning(f"Could not remove original upload file {original_filepath}: {rm_err}")
-
+            return jsonify({"error": f"An error occurred saving the uploaded file: {e}"}), 500
 
     else:
-        # File type not allowed
-        flash('Invalid file type. Please upload an .xlsx file.', 'error')
         logger.warning(f"Invalid file type uploaded: {file.filename}")
-        return redirect(url_for('ui.upload_config_page'))
+        return jsonify({"error": "Invalid file type. Please upload an .xlsx file."}), 400
+
+
+@processing_bp.route('/run-comparison', methods=['POST'])
+def run_comparison():
+    """
+    Triggers the comparison process using the last uploaded original file.
+    Generates the '*_processed.xlsx' file and loads its data into the cache.
+    """
+    logger.info("Received request to run comparison process.")
+    # Retrieve the path of the last uploaded original file
+    original_filepath = current_app.config.get('LAST_UPLOADED_ORIGINAL_FILE')
+
+    if not original_filepath or not os.path.exists(original_filepath):
+        logger.error("Run comparison triggered, but no valid original file path found in config.")
+        return jsonify({"error": "No valid source file has been uploaded recently."}), 400
+
+    original_filename = os.path.basename(original_filepath)
+    processed_filename = f"{os.path.splitext(original_filename)[0]}_processed.xlsx"
+    processed_filepath = os.path.join(UPLOAD_FOLDER, processed_filename)
+
+    logger.info(f"Starting comparison process using: {original_filepath}")
+    config = current_app.config.get('APP_SETTINGS', {}) # Get loaded app config
+    workbook = None
+
+    try:
+        # 1. Make a working copy (output path)
+        shutil.copyfile(original_filepath, processed_filepath)
+        logger.info(f"Copied original file to '{processed_filepath}' for processing.")
+
+        # 2. Load the copied workbook
+        logging.info(f"Loading workbook: {processed_filepath}")
+        workbook = openpyxl.load_workbook(processed_filepath, read_only=False, data_only=False)
+
+        # 3. Fetch API data AND Max IDs
+        api_data, max_dn_id, max_ag_id = fetch_api_data(config)
+        if not any(api_data.values()):
+            logging.warning("API data fetch resulted in empty/partial datasets.")
+
+        # 4. Collect data from Excel sheets (modifies workbook)
+        sheet_data_for_comparison, intermediate_data = collect_routing_entities(
+            workbook, config, METADATA_SHEET_NAME
+        )
+
+        # 5. Write comparison sheets (modifies workbook)
+        write_comparison_sheets(
+            workbook, sheet_data_for_comparison, api_data, intermediate_data
+        )
+
+        # 6. Write Metadata sheet (modifies workbook)
+        if METADATA_SHEET_NAME in workbook.sheetnames:
+            metadata_sheet = workbook[METADATA_SHEET_NAME]
+        else:
+            metadata_sheet = workbook.create_sheet(title=METADATA_SHEET_NAME)
+        metadata_sheet[MAX_DN_ID_LABEL_CELL] = "Max DN API ID Found"
+        metadata_sheet[MAX_DN_ID_LABEL_CELL].font = Font(bold=True)
+        metadata_sheet[MAX_DN_ID_VALUE_CELL] = max_dn_id
+        metadata_sheet[MAX_AG_ID_LABEL_CELL] = "Max AgentGroup API ID Found"
+        metadata_sheet[MAX_AG_ID_LABEL_CELL].font = Font(bold=True)
+        metadata_sheet[MAX_AG_ID_VALUE_CELL] = max_ag_id
+        logging.info(f"Wrote Max IDs (DN:{max_dn_id}, AG:{max_ag_id}) to '{METADATA_SHEET_NAME}'.")
+
+        # 7. Save the processed workbook
+        workbook.save(processed_filepath)
+        logger.info(f"Successfully saved processed workbook to: {processed_filepath}")
+
+        # --- 8. Update App Cache from the *newly generated* processed file ---
+        logger.info("Reloading application data cache from processed file...")
+        # Clear previous cache first
+        current_app.config['EXCEL_DATA'] = {}
+        current_app.config['EXCEL_FILENAME'] = None
+        current_app.config['COMPARISON_SHEETS'] = []
+        current_app.config['SHEET_HEADERS'] = {}
+        current_app.config['MAX_DN_ID'] = 0
+        current_app.config['MAX_AG_ID'] = 0
+
+        # Call the utility function to read the processed file into the cache
+        if read_comparison_data(processed_filepath):
+             logger.info("Application cache updated successfully.")
+             # Determine the first comparison sheet to redirect to
+             first_sheet = current_app.config.get('COMPARISON_SHEETS', [None])[0]
+             return jsonify({
+                 "message": f"File '{original_filename}' processed successfully.",
+                 "processed_file": processed_filename,
+                 "redirect_url": url_for('ui.view_comparison', comparison_type=first_sheet) if first_sheet else url_for('ui.upload_config_page')
+                 }), 200
+        else:
+             logger.error("Failed to reload data cache after processing.")
+             return jsonify({"error": f"File '{original_filename}' processed, but failed to reload data into UI cache. Check logs."}), 500
+
+    except Exception as proc_err:
+        logger.error(f"Error during file processing: {proc_err}", exc_info=True)
+        return jsonify({"error": f"Error processing file '{original_filename}': {proc_err}"}), 500
+    finally:
+        if workbook:
+            try:
+                workbook.close()
+                logger.debug("Processing workbook closed.")
+            except Exception as close_e:
+                 logging.warning(f"Error closing processing workbook: {close_e}")
+
+
+@processing_bp.route('/load-processed-file', methods=['POST'])
+def load_processed_file():
+    """
+    Loads data from an existing *_processed.xlsx file (selected by user)
+    into the application cache.
+    """
+    logger.info("Request received to load existing processed file.")
+    request_data = request.get_json()
+    if not request_data or 'filename' not in request_data:
+        logger.warning("Load processed file request missing filename.")
+        return jsonify({"error": "Filename not provided."}), 400
+
+    filename = secure_filename(request_data['filename']) # Sanitize filename
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+
+    logger.info(f"Attempting to load data from: {filepath}")
+
+    if not os.path.exists(filepath):
+        logger.error(f"Processed file not found: {filepath}")
+        return jsonify({"error": f"File '{filename}' not found in uploads directory."}), 404
+
+    # Clear existing cache before loading
+    current_app.config['EXCEL_DATA'] = {}
+    current_app.config['EXCEL_FILENAME'] = None
+    current_app.config['COMPARISON_SHEETS'] = []
+    current_app.config['SHEET_HEADERS'] = {}
+    current_app.config['MAX_DN_ID'] = 0
+    current_app.config['MAX_AG_ID'] = 0
+
+    # Use the utility function to read the file into cache
+    if read_comparison_data(filepath):
+        logger.info(f"Successfully loaded data from '{filename}' into cache.")
+        first_sheet = current_app.config.get('COMPARISON_SHEETS', [None])[0]
+        return jsonify({
+            "message": f"Successfully loaded data from '{filename}'.",
+            "redirect_url": url_for('ui.view_comparison', comparison_type=first_sheet) if first_sheet else url_for('ui.upload_config_page')
+        }), 200
+    else:
+        logger.error(f"Failed to read data from '{filename}'. Check logs.")
+        # Reset cache again on failure
+        current_app.config['EXCEL_DATA'] = {}
+        current_app.config['EXCEL_FILENAME'] = None
+        current_app.config['COMPARISON_SHEETS'] = []
+        current_app.config['SHEET_HEADERS'] = {}
+        current_app.config['MAX_DN_ID'] = 0
+        current_app.config['MAX_AG_ID'] = 0
+        return jsonify({"error": f"Failed to read data from '{filename}'. Check logs."}), 500
 
 
 @processing_bp.route('/update-config', methods=['POST'])
@@ -269,7 +300,7 @@ def update_config():
     """
     logger.info("Received request to update configuration.")
     try:
-        # Extract form data - keys must match the 'name' attributes in the HTML form
+        # Extract form data - keys must match the 'name' attributes in HTML form
         settings_to_save = {
             # 'source_file': request.form.get('source_file'), # Removed source_file
             'dn_url': request.form.get('dn_url'),
@@ -290,7 +321,7 @@ def update_config():
         save_config(config_path, settings_to_save)
 
         # Update the config cache in the running app
-        current_app.config['APP_SETTINGS'].update(settings_to_save) # Merge updates
+        current_app.config['APP_SETTINGS'] = settings_to_save # Overwrite with new settings
         logger.info("Configuration saved and application cache updated.")
         flash('Configuration saved successfully to config.ini.', 'success')
 
@@ -307,7 +338,7 @@ def simulate_configuration():
     """
     API endpoint to simulate applying a template to selected rows.
     Generates JSON payloads using placeholders and returns them for review.
-    (Logic moved from old update_routes.py)
+    (Logic uses IdGenerator and replace_placeholders from utils)
     """
     logger.info("Request received for /api/simulate-configuration")
     try:

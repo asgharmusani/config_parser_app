@@ -8,34 +8,21 @@ Flask Blueprint for defining routes that render the main UI pages.
 
 import logging
 import math
+import os # Added for listing processed files
 from flask import (
     Blueprint, render_template, request, redirect, url_for, current_app, flash
 )
 from typing import Optional, Tuple
 
-# --- MODIFICATION START: Remove incorrect import block ---
-# # Import helper function to read data (now in utils) - This was incorrect
-# try:
-#     # Import constants needed for rendering logic - These should be defined locally
-#     from utils import (
-#         DEFAULT_PAGE_SIZE, PAGE_SIZE_OPTIONS, COMPARISON_SUFFIX,
-#         SKILL_EXPR_SHEET_NAME # Keep for conditional template logic
-#     )
-# except ImportError:
-#     logging.error("Failed to import constants from utils.py in ui_routes.")
-#     # Define fallbacks if needed, although app might fail earlier if utils is missing
-#     DEFAULT_PAGE_SIZE = 100
-#     PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
-#     COMPARISON_SUFFIX = " Comparison"
-#     SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison"
-# --- MODIFICATION END ---
-
+# Note: Constants like DEFAULT_PAGE_SIZE are defined below, not imported from utils.
 
 # --- Constants (Defined locally for this blueprint) ---
 DEFAULT_PAGE_SIZE = 100
 PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
 COMPARISON_SUFFIX = " Comparison"
-SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Still needed for template conditional logic
+# Keep SKILL_EXPR_SHEET_NAME if template uses it for conditional logic
+SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison"
+UPLOAD_FOLDER = './uploads' # Define upload folder path
 
 
 # --- Logging ---
@@ -53,13 +40,34 @@ def upload_config_page():
     """
     Renders the initial page for uploading the Excel file and managing configuration.
     Uses the 'upload_config.html' template.
+    Also lists existing processed files.
     """
     logger.info("Rendering Upload/Configuration page.")
     # Fetch current application configuration settings to display in the form
-    # Assumes config is loaded into current_app.config['APP_SETTINGS'] by app.py
     app_config = current_app.config.get('APP_SETTINGS', {})
-    # Pass config to the template
-    return render_template('upload_config.html', config=app_config)
+
+    # List previously processed files for the user to select from
+    processed_files = []
+    # Ensure upload folder exists before trying to list files
+    if os.path.exists(UPLOAD_FOLDER):
+        try:
+            processed_files = sorted(
+                # List files ending with _processed.xlsx
+                [f for f in os.listdir(UPLOAD_FOLDER) if f.endswith('_processed.xlsx') and os.path.isfile(os.path.join(UPLOAD_FOLDER, f))],
+                # Sort by modification time, newest first
+                key=lambda f: os.path.getmtime(os.path.join(UPLOAD_FOLDER, f)),
+                reverse=True
+            )
+            logger.debug(f"Found processed files: {processed_files}")
+        except Exception as e:
+            logger.error(f"Error listing processed files in {UPLOAD_FOLDER}: {e}")
+            flash("Error listing previously processed files.", "error")
+    else:
+        logger.warning(f"Upload folder '{UPLOAD_FOLDER}' does not exist. Cannot list processed files.")
+
+
+    # Pass config and file list to the template
+    return render_template('upload_config.html', config=app_config, processed_files=processed_files)
 
 
 @ui_bp.route('/view/<comparison_type>')
@@ -75,16 +83,17 @@ def view_comparison(comparison_type):
     logger.info(f"Request to view comparison type: {comparison_type}")
 
     # --- Get Data and Config from App Cache ---
-    # These values should have been populated by the /api/upload-process route
+    # These values should have been populated by the /api/upload-process
+    # or /api/load-processed-file routes
     filename = current_app.config.get('EXCEL_FILENAME')
     all_data = current_app.config.get('EXCEL_DATA', {})
     available_sheets = current_app.config.get('COMPARISON_SHEETS', [])
-    sheet_headers_map = current_app.config.get('SHEET_HEADERS', {}) # Get cached headers
+    sheet_headers_map = current_app.config.get('SHEET_HEADERS', {})
     error = None # Initialize error variable for this request
 
     # Check if data is loaded; if not, redirect to the upload page with a message
     if not filename or not all_data or not available_sheets or not sheet_headers_map:
-        error_msg = "No comparison data loaded. Please upload and process an Excel file first."
+        error_msg = "No comparison data loaded. Please upload/process or load a file first."
         logger.warning(error_msg)
         flash(error_msg, 'warning') # Use Flask flash messaging
         return redirect(url_for('ui.upload_config_page')) # Redirect to upload page
@@ -167,7 +176,7 @@ def view_comparison(comparison_type):
             value = item.get(sort_by) # Get the value for the column we're sorting by
 
             if value is None:
-                # Place None at the end when ascending, beginning when descending
+                # Place None values consistently (e.g., at the end when ascending)
                 return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
             try:
                 # Try numeric sort for 'ID' column (or similar) if possible
@@ -272,7 +281,7 @@ def refresh_data():
     # Reset max IDs
     current_app.config['MAX_DN_ID'] = 0
     current_app.config['MAX_AG_ID'] = 0
-    flash("Data cache cleared. Please upload a processed Excel file.", "info")
+    flash("Data cache cleared. Please upload an Excel file.", "info")
     # Redirect to the upload page
     return redirect(url_for('ui.upload_config_page'))
 

@@ -34,8 +34,13 @@
                class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
                Config Templates
             </a>
+            {# Link back to Upload/Config page #}
+            <a href="{{ url_for('ui.upload_config_page') }}"
+               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+               Upload/Config
+            </a>
              {# Reload Data Button #}
-             <a href="{{ url_for('ui.refresh_data') }}" title="Reload data from Excel file" {# Corrected url_for target #}
+             <a href="{{ url_for('ui.refresh_data') }}" title="Reload data from Excel file"
                 class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600"> {# Prevent button shrinking #}
                 <i data-lucide="refresh-cw" class="inline-block w-4 h-4"></i> Reload Data
              </a>
@@ -46,9 +51,8 @@
 
 {% block content %}
     {# Display general messages passed to this template #}
-    {# This assumes messages are handled via Flask's flash system or passed in context #}
-    {# Reusing the _messages.html partial is recommended here #}
-    {% include '_messages.html' %} {# Assumes _messages.html exists #}
+    {# Include the partial template for flash messages #}
+    {% include '_messages.html' %}
 
     {# Display note if no data for this specific category #}
     {% if not page_data and not error and (not pagination or pagination.total_items == 0) %}
@@ -295,7 +299,8 @@
       async function simulateConfiguration() {
             const selectedTemplate = templateSelect.value;
             const checkedBoxes = document.querySelectorAll('.row-checkbox:checked');
-            const selectedIds = Array.from(checkedBoxes).map(cb => cb.value).filter(id => id);
+            // Get the unique identifier stored in the 'data-row-id' attribute of the parent row
+            const selectedIds = Array.from(checkedBoxes).map(cb => cb.closest('tr').dataset.rowId).filter(id => id);
 
             if (!selectedTemplate || selectedIds.length === 0) { alert('Please select rows and a template first.'); return; }
 
@@ -375,4 +380,3 @@
 
     </script>
 {% endblock %}
-
