@@ -1,0 +1,29 @@
+{# --- Partial Template for Displaying Flash Messages --- #}
+{# This template is included in other templates (like base.html or specific pages) #}
+{# using {% include '_messages.html' %} #}
+
+{# Use Flask's get_flashed_messages with categories enabled #}
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {# Check if there are any messages to display #}
+  {% if messages %}
+    {# Loop through each message tuple (category, message) #}
+    {% for category, message in messages %}
+      {# Apply Tailwind CSS classes based on the category for styling #}
+      <div class="p-3 rounded-md text-sm mb-3 border
+          {# Conditional classes for different message types #}
+          {% if category == 'error' %}
+              bg-red-100 text-red-700 border-red-300
+          {% elif category == 'success' %}
+              bg-green-100 text-green-700 border-green-300
+          {% elif category == 'warning' %}
+              bg-yellow-100 text-yellow-700 border-yellow-300
+          {% else %} {# Default/info style #}
+              bg-blue-100 text-blue-700 border-blue-300
+          {% endif %}"
+          role="alert">
+          {# Display the message content #}
+          {{ message }}
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}

@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {# --- Block for page-specific title --- #}
+    {# Allows extending templates to set their own title in the browser tab #}
+    <title>{% block title %}Excel/API Comparator{% endblock %}</title>
+
+    {# --- Load Tailwind CSS via CDN --- #}
+    {# Provides utility classes for styling the application #}
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+
+    {# --- Load Lucide Icons --- #}
+    {# Used for icons (like arrows, refresh) throughout the UI #}
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+    {# --- Basic Styles --- #}
+    <style>
+        /* Add any base styles shared across all pages here */
+        body {
+            /* Add padding to the bottom to prevent content from being hidden by the fixed action bar */
+            padding-bottom: 5rem;
+        }
+        /* Action Bar Styles */
+        #actionBar {
+            /* Smooth transition for sliding in/out */
+            transition: transform 0.3s ease-in-out;
+            /* Start hidden below the viewport */
+            transform: translateY(100%);
+        }
+        #actionBar.visible {
+            /* Slide into view */
+            transform: translateY(0);
+        }
+        /* Selected row highlight style */
+         tbody tr.selected-row {
+            background-color: #dbeafe !important; /* Tailwind blue-100 */
+         }
+         /* Ensure links in table headers align icons correctly */
+         th a {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem; /* space between text and icon */
+         }
+         th a:hover {
+            text-decoration: underline;
+         }
+        /* Style for sort direction icons */
+        .sort-icon {
+            width: 1em; /* 1 times the current font size */
+            height: 1em;
+            stroke-width: 2; /* Icon line thickness */
+        }
+
+        /* Add other base styles as needed */
+    </style>
+
+    {# --- Block for page-specific head elements (CSS, meta tags) --- #}
+    {# Extending templates can add their own styles or meta tags here #}
+    {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-100 font-sans">
+
+    {# --- Main Content Container --- #}
+    {# Provides padding and centers content #}
+    <div class="container mx-auto p-4 sm:p-6 lg:p-8">
+
+        {# --- Main Page Header --- #}
+        <h1 class="text-3xl font-bold text-gray-800 mb-4">Excel vs API Comparison Report</h1>
+
+        {# --- Display source filename if available (passed from Flask route) --- #}
+        {% if filename %}
+            <p class="mb-4 text-sm text-gray-500">
+                Source File: <code class="bg-gray-200 px-1 rounded">{{ filename }}</code>
+            </p>
+        {% endif %}
+
+        {# --- Navigation Block (can be overridden by extending templates) --- #}
+        {% block navigation %}
+            {# Default navigation can go here, or leave empty if defined in child templates #}
+        {% endblock %}
+
+        {# --- General Message/Error Area --- #}
+        {# This block can be used to display flash messages or other status updates #}
+        <div id="generalMessageArea" class="mb-4">
+             {% block messages %}
+                {# Default implementation using Flask's flash messaging system #}
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                        {# Apply different background/text colors based on message category #}
+                        <div class="p-3 rounded-md text-sm mb-2 border
+                            {% if category == 'error' %} bg-red-100 text-red-700 border-red-300
+                            {% elif category == 'success' %} bg-green-100 text-green-700 border-green-300
+                            {% elif category == 'warning' %} bg-yellow-100 text-yellow-700 border-yellow-300
+                            {% else %} bg-blue-100 text-blue-700 border-blue-300 {% endif %}"
+                            role="alert">
+                            {{ message }} {# Display the flash message #}
+                        </div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+             {% endblock %}
+        </div>
+
+        {# --- Main Content Block (to be filled by extending templates) --- #}
+        {# This is where the primary content of each specific page will go #}
+        <div id="main-content">
+            {% block content %}{% endblock %}
+        </div>
+
+    </div>{# --- End Container --- #}
+
+    {# --- Fixed Action Bar (Common element, placed outside main container) --- #}
+    {# This bar appears at the bottom, often shown conditionally via JavaScript #}
+    <div id="actionBar" class="fixed bottom-0 left-0 right-0 bg-gray-800 text-white p-3 shadow-lg flex items-center justify-between z-10">
+        {% block action_bar %}
+            {# Default action bar content - can be overridden by child templates #}
+            <span id="actionBarMessage" class="text-sm font-medium">Default Action Bar</span>
+            <div></div>
+        {% endblock %}
+    </div>
+
+    {# --- Initialize Lucide Icons --- #}
+    {# This script call finds all elements with data-lucide attributes and renders the icons #}
+    <script>
+      lucide.createIcons();
+    </script>
+
+    {# --- Block for page-specific JavaScript --- #}
+    {# Extending templates can add their own JavaScript logic here #}
+    {% block scripts %}{% endblock %}
+
+</body>
+</html>

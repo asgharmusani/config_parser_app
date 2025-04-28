@@ -1,0 +1,407 @@
+{% extends "base.html" %} {# Inherit from the base layout #}
+
+{% block title %}Configuration Template Manager{% endblock %}
+
+{% block head %}
+    {# Add any page-specific CSS or meta tags here if needed #}
+    <style>
+        /* Basic styling for elements on this page */
+        .json-display { /* Style for displaying JSON content */
+            background-color: #f3f4f6; /* gray-100 */
+            border: 1px solid #d1d5db; /* gray-300 */
+            padding: 1rem;
+            border-radius: 0.375rem; /* rounded-md */
+            max-height: 300px; /* Limit height and allow scrolling */
+            overflow-y: auto;
+            white-space: pre-wrap; /* Allow wrapping */
+            word-wrap: break-word; /* Break long words */
+            font-family: monospace; /* Use monospace font for code */
+            font-size: 0.875rem; /* text-sm */
+        }
+        textarea { /* Style for the template editor textarea */
+            font-family: monospace;
+            font-size: 0.875rem; /* text-sm */
+            min-height: 300px; /* Set a minimum height */
+        }
+        /* Style for code examples in help text */
+        code {
+            background-color: #e5e7eb; /* gray-200 */
+            padding: 0.1em 0.3em;
+            border-radius: 0.25em; /* rounded-sm */
+            font-size: 0.9em;
+        }
+        .help-text ul { margin-top: 0.25rem; }
+        .help-text li { margin-bottom: 0.25rem;}
+    </style>
+{% endblock %}
+
+{% block navigation %}
+    {# Link back to main viewer - Placed within the content block for better context #}
+    <div class="mb-6">
+        <a href="{{ url_for('ui.upload_config_page') }}" class="text-indigo-600 hover:text-indigo-800 text-sm">&larr; Back to Upload/Configure</a>
+    </div>
+{% endblock %}
+
+
+{% block messages %}
+    {# Override the default message block to place messages specifically for this page #}
+    <div id="messageArea" class="mb-4">
+        {# Flash messages can also be rendered here if setup in Flask #}
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                <div class="p-3 rounded-md text-sm mb-2
+                    {% if category == 'error' %} bg-red-100 text-red-700 border border-red-300
+                    {% elif category == 'success' %} bg-green-100 text-green-700 border border-green-300
+                    {% elif category == 'warning' %} bg-yellow-100 text-yellow-700 border border-yellow-300
+                    {% else %} bg-blue-100 text-blue-700 border border-blue-300 {% endif %}"
+                    role="alert">
+                    {{ message }}
+                </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+    </div>
+{% endblock %}
+
+
+{% block content %}
+    {# Main grid layout: Lister | Editor #}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        {# Column 1: Template Lister #}
+        <div class="md:col-span-1 bg-white p-4 shadow rounded-lg">
+            <h2 class="text-xl font-semibold mb-3 border-b pb-2">Existing Templates</h2>
+            {# List element populated by JavaScript #}
+            <ul id="templateList" class="list-none space-y-2">
+                 <li class="text-gray-500 italic">Loading...</li> {# Loading indicator #}
+            </ul>
+        </div>
+
+        {# Column 2: Template Editor/Creator #}
+        <div class="md:col-span-2 bg-white p-4 shadow rounded-lg">
+            <h2 class="text-xl font-semibold mb-3 border-b pb-2">Create / Edit Template</h2>
+
+            {# Optional: Reference API Fetcher Section #}
+            <div class="mb-4 p-3 border rounded bg-gray-50">
+                <h3 class="text-sm font-medium text-gray-600 mb-2">Reference API Data (Optional)</h3>
+                <div class="flex items-center space-x-2 mb-2">
+                    <input type="text" id="refApiUrl" placeholder="Enter API URL (e.g., Agent Group URL)"
+                           class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                    {# Button calls the fetchReferenceApi JS function #}
+                    <button onclick="fetchReferenceApi()" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm">Fetch Example</button>
+                </div>
+                {# Areas to display fetched data or errors #}
+                <div id="refApiResult" class="json-display text-xs" style="display: none;"></div>
+                <div id="refApiError" class="text-red-600 text-xs mt-1"></div>
+            </div>
+
+            {# Template Definition Text Area #}
+            <div class="mb-4">
+                <label for="templateContent" class="block text-sm font-medium text-gray-700 mb-1">Template JSON Structure:</label>
+                {# Textarea with updated placeholder showing examples #}
+                <textarea id="templateContent" rows="15"
+                    placeholder='{\n  "staticExample": "This is a fixed value",\n  "entityType": "agentGroup",\n  "vqName": "{row.Vqs}", \n  "skillExprKey": "{row.Concatenated Key}",\n  "combinedExample": "AG_{row.ID (from API)}_Suffix",\n  "needsReview": true,\n  "newIdExample": "{func.next_id}",\n  "details": {\n    "expression": "{row.Expression}",\n    "ideal": "{row.Ideal Expression}",\n    "statusFromSheet": "{row.Status}"\n  }\n}'
+                    class="w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+
+                {# Help text explaining placeholder syntax #}
+                <div class="text-xs text-gray-600 mt-1 space-y-1 help-text">
+                    <p>Define the target JSON structure for database updates.</p>
+                    <p><strong>Value Types:</strong></p>
+                    <ul class="list-disc list-inside ml-2">
+                        <li><strong>Static:</strong> Enter plain text, numbers, or booleans (e.g., <code>"active": true</code>).</li>
+                        <li><strong>Row Data:</strong> Use <code>{row.ColumnName}</code>. The <code>ColumnName</code> must match the actual column header from the specific Comparison Sheet you are applying the template to (case-insensitive).
+                            <br><em>Examples:</em> <code>{row.Vqs}</code>, <code>{row.Skills}</code>, <code>{row.Vags}</code>, <code>{row.Concatenated Key}</code>, <code>{row.Expression}</code>, <code>{row.Ideal Expression}</code>, <code>{row.ID (from API)}</code>, <code>{row.Status}</code>.
+                        </li>
+                        <li><strong>Combined:</strong> Mix static text and row data (e.g., <code>"AG_{row.ID (from API)}"</code>, <code>"Prefix:{row.Vqs}"</code>).</li>
+                        <li><strong>Function (Next ID):</strong> Use <code>{func.next_id}</code> to insert the next available sequential ID for the current row being processed. The same ID is used for all <code>{func.next_id}</code> placeholders within a single row's template application. The starting ID is based on the max ID found in the loaded Excel file's Metadata sheet (separated for VQs vs other types).</li>
+                    </ul>
+                </div>
+            </div>
+
+            {# Saving Section #}
+            <div class="flex items-center space-x-3">
+                 <label for="templateName" class="text-sm font-medium text-gray-700">Save as:</label>
+                 <input type="text" id="templateName" placeholder="Template Name (e.g., RE_Config_MySetup)"
+                        class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                 <button onclick="saveTemplate()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded-md text-sm">Save Template</button>
+            </div>
+            <p class="text-xs text-gray-500 mt-1">Filename will be saved as <code>./config_templates/&lt;Template Name&gt;.json</code>.</p>
+
+        </div>
+    </div> {# End Grid #}
+{% endblock %}
+
+
+{% block action_bar %}
+    {# No action bar needed on this page, override base block to be empty #}
+{% endblock %}
+
+
+{% block scripts %}
+    {# --- Page-Specific JavaScript --- #}
+    <script>
+      // --- DOM Element References ---
+      const templateListEl = document.getElementById('templateList');
+      const templateContentEl = document.getElementById('templateContent');
+      const templateNameEl = document.getElementById('templateName');
+      const messageAreaEl = document.getElementById('messageArea');
+      const refApiUrlEl = document.getElementById('refApiUrl');
+      const refApiResultEl = document.getElementById('refApiResult');
+      const refApiErrorEl = document.getElementById('refApiError');
+
+      // --- State Variable ---
+      let currentEditingTemplate = null; // Track which template filename is loaded
+
+       // --- Utility: Message Display ---
+      function showMessage(text, isError = false) {
+          // Displays a feedback message (success or error) in the message area.
+          messageAreaEl.textContent = text;
+          // Apply appropriate styling based on whether it's an error
+          messageAreaEl.className = `mb-4 p-3 rounded-md text-sm ${isError ? 'bg-red-100 text-red-700 border border-red-300' : 'bg-green-100 text-green-700 border border-green-300'}`;
+          // Auto-hide message after 5 seconds for better UX
+          setTimeout(() => {
+              messageAreaEl.textContent = '';
+              messageAreaEl.className = 'mb-4'; // Reset class
+          }, 5000);
+      }
+
+      // --- Template Loading Functions ---
+      async function loadTemplateList() {
+          // Fetches the list of template filenames from the backend and populates the UI list.
+          templateListEl.innerHTML = '<li class="text-gray-500 italic">Loading...</li>'; // Show loading indicator
+          try {
+              // Fetch list from the backend endpoint (using url_for for the 'templates' blueprint)
+              const response = await fetch('{{ url_for("templates.list_templates") }}');
+              if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const templates = await response.json(); // Expecting list of filenames
+
+              templateListEl.innerHTML = ''; // Clear loading/previous list
+              if (templates.length === 0) {
+                  templateListEl.innerHTML = '<li class="text-gray-500 italic">No templates found. Create one!</li>';
+              } else {
+                  // Create list items for each template with view/edit and delete buttons
+                  templates.forEach(filename => {
+                      const li = document.createElement('li');
+                      li.className = 'flex justify-between items-center text-sm border-b pb-1';
+                      const baseName = filename.replace('.json', ''); // Display name without extension
+
+                      // Template name (clickable to load)
+                      const nameSpan = document.createElement('span');
+                      nameSpan.textContent = baseName;
+                      nameSpan.className = 'cursor-pointer hover:text-indigo-600';
+                      nameSpan.onclick = () => loadTemplateContent(filename); // Load content on click
+
+                      // Action buttons container
+                      const actionsDiv = document.createElement('div');
+                      actionsDiv.className = 'space-x-2';
+
+                      // View/Edit Button
+                      const viewButton = document.createElement('button');
+                      viewButton.innerHTML = '<i data-lucide="eye" class="w-4 h-4 text-blue-500 hover:text-blue-700"></i>';
+                      viewButton.title = 'View/Edit';
+                      viewButton.onclick = () => loadTemplateContent(filename); // Load content on click
+
+                      // Delete Button
+                      const deleteButton = document.createElement('button');
+                      deleteButton.innerHTML = '<i data-lucide="trash-2" class="w-4 h-4 text-red-500 hover:text-red-700"></i>';
+                      deleteButton.title = 'Delete';
+                      deleteButton.onclick = () => deleteTemplate(filename); // Trigger delete confirmation
+
+                      // Assemble the list item
+                      actionsDiv.appendChild(viewButton);
+                      actionsDiv.appendChild(deleteButton);
+                      li.appendChild(nameSpan);
+                      li.appendChild(actionsDiv);
+                      templateListEl.appendChild(li);
+                   });
+                  lucide.createIcons(); // Re-render Lucide icons after adding them
+              }
+          } catch (error) {
+              // Handle errors during template list loading
+              console.error('Error loading template list:', error);
+              templateListEl.innerHTML = '<li class="text-red-600 italic">Error loading templates.</li>';
+              showMessage('Failed to load template list.', true);
+          }
+      }
+
+      async function loadTemplateContent(filename) {
+          // Fetches the content of a specific template file and displays it in the editor.
+          currentEditingTemplate = filename; // Track the file being edited
+          const baseName = filename.replace('.json', '');
+          templateNameEl.value = baseName; // Populate the name input field
+          templateContentEl.value = 'Loading...'; // Indicate loading in textarea
+           messageAreaEl.textContent = ''; // Clear previous messages
+          try {
+              // Construct URL safely using placeholder replacement and encoding
+              const url = `{{ url_for("templates.get_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", encodeURIComponent(filename));
+              const response = await fetch(url);
+              if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const content = await response.json(); // Expecting JSON content
+              // Display JSON nicely formatted (pretty-printed) in the textarea
+              templateContentEl.value = JSON.stringify(content, null, 2);
+          } catch (error) {
+              // Handle errors loading template content
+              console.error(`Error loading template ${filename}:`, error);
+              templateContentEl.value = `Error loading template: ${error.message}`;
+              showMessage(`Failed to load template '${baseName}'.`, true);
+              currentEditingTemplate = null; // Reset editing state on error
+          }
+      }
+
+      // --- Template Saving Function ---
+      async function saveTemplate() {
+          // Saves the editor content as a template file on the server.
+          const name = templateNameEl.value.trim();
+          const content = templateContentEl.value.trim();
+           messageAreaEl.textContent = ''; // Clear previous messages
+
+          // Basic filename validation
+          if (!name) {
+              showMessage('Template name cannot be empty.', true);
+              templateNameEl.focus();
+              return;
+          }
+           // Prevent directory traversal or invalid characters
+          if (/[\\/]/.test(name)) {
+             showMessage('Template name contains invalid characters (\\ or /).', true);
+             templateNameEl.focus();
+             return;
+          }
+
+          // Validate JSON content before sending
+          let jsonData;
+          try {
+              jsonData = JSON.parse(content);
+          } catch (error) {
+              showMessage(`Invalid JSON format in editor: ${error.message}`, true);
+              templateContentEl.focus();
+              return;
+          }
+
+          // Construct filename
+          const filename = name + '.json';
+
+          try {
+              // Send POST request to the save endpoint
+              const response = await fetch('{{ url_for("templates.save_template") }}', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  // Send filename and the parsed JSON content
+                  body: JSON.stringify({ filename: filename, content: jsonData })
+              });
+              const result = await response.json(); // Expecting {message: ...} or {error: ...}
+
+              if (response.ok) {
+                  showMessage(result.message || 'Template saved successfully.');
+                  loadTemplateList(); // Refresh the list of templates
+                  // Keep content in editor for further edits or clear it:
+                  // loadTemplateContent(filename); // Option: reload saved content
+              } else {
+                  // Handle errors reported by the backend
+                  throw new Error(result.error || `HTTP error! status: ${response.status}`);
+              }
+          } catch (error) {
+              // Handle network errors or errors parsing the response
+              console.error('Error saving template:', error);
+              showMessage(`Error saving template: ${error.message}`, true);
+          }
+      }
+
+      // --- Template Deletion Function ---
+      async function deleteTemplate(filename) {
+          // Deletes a template file from the server after confirmation.
+          const baseName = filename.replace('.json', '');
+          // Confirm deletion with the user
+          if (!confirm(`Are you sure you want to delete the template "${baseName}"? This action cannot be undone.`)) {
+              return;
+          }
+           messageAreaEl.textContent = ''; // Clear previous messages
+
+          try {
+               // Construct URL safely using placeholder replacement and encoding
+              const url = `{{ url_for("templates.delete_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", encodeURIComponent(filename));
+              // Send DELETE request (or POST if DELETE causes issues)
+              const response = await fetch(url, {
+                  method: 'DELETE'
+              });
+              const result = await response.json(); // Expecting {message: ...} or {error: ...}
+
+              if (response.ok) {
+                  showMessage(result.message || 'Template deleted successfully.');
+                  loadTemplateList(); // Refresh the list
+                  // If the deleted template was loaded in the editor, clear the editor
+                  if (currentEditingTemplate === filename) {
+                      templateNameEl.value = '';
+                      templateContentEl.value = '';
+                      currentEditingTemplate = null;
+                  }
+              } else {
+                   // Handle errors reported by the backend
+                  throw new Error(result.error || `HTTP error! status: ${response.status}`);
+              }
+          } catch (error) {
+              // Handle network errors or errors parsing the response
+              console.error(`Error deleting template ${filename}:`, error);
+              showMessage(`Error deleting template '${baseName}': ${error.message}`, true);
+          }
+      }
+
+      // --- Reference API Fetcher Function ---
+       async function fetchReferenceApi() {
+           // Fetches example API data via the backend proxy.
+            const url = refApiUrlEl.value.trim();
+            // Clear previous results/errors
+            refApiResultEl.style.display = 'none';
+            refApiResultEl.textContent = '';
+            refApiErrorEl.textContent = '';
+
+            if (!url) {
+                refApiErrorEl.textContent = 'Please enter an API URL.';
+                return;
+            }
+
+            // Show fetching indicator
+            refApiResultEl.textContent = 'Fetching...';
+            refApiResultEl.style.display = 'block';
+
+            try {
+                // Call the backend proxy endpoint
+                const response = await fetch('{{ url_for("templates.proxy_api_fetch") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    // Send the target URL in the request body
+                    body: JSON.stringify({ url: url })
+                });
+                const result = await response.json(); // Expecting {data: ...} or {error: ...}
+
+                if (response.ok && result.data) {
+                    // Display the fetched data pretty-printed
+                    refApiResultEl.textContent = JSON.stringify(result.data, null, 2);
+                } else {
+                     // Handle errors reported by the proxy or the target API
+                     throw new Error(result.error || `HTTP error! status: ${response.status}`);
+                }
+            } catch (error) {
+                 // Handle network errors or errors parsing the response
+                 console.error('Error fetching reference API:', error);
+                 refApiResultEl.textContent = '';
+                 refApiResultEl.style.display = 'none';
+                 refApiErrorEl.textContent = `Error fetching API: ${error.message}`;
+                 // Optionally show error in main message area too
+                 showMessage(`Failed to fetch reference API: ${error.message}`, true);
+            }
+       }
+
+
+      // --- Initial Load ---
+      // Load the list of templates when the page DOM is ready
+      document.addEventListener('DOMContentLoaded', loadTemplateList);
+
+    </script>
+{% endblock %}
+
