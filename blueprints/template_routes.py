@@ -18,14 +18,14 @@ import logging
 import datetime
 import requests
 import re # Added for placeholder logic
-from flask import Blueprint, request, jsonify, render_template_string, abort, current_app, render_template # Added render_template
+from flask import (
+    Blueprint, request, jsonify, render_template, abort, current_app, session, url_for # Added render_template, session, url_for
+)
 from typing import Dict, Any, Optional, List # Added List
 
 # --- Constants ---
-# Use constants defined in the main app or config if possible, or define here
-# Assuming TEMPLATE_DIR is accessible or redefined
-TEMPLATE_DIR = './config_templates/'
-LOG_FILE_UI = 'ui_viewer.log'
+TEMPLATE_DIR = './config_templates/' # Directory where JSON templates are stored
+LOG_FILE_UI = 'ui_viewer.log'        # Assuming shared log file with main app
 
 # --- Logging ---
 # Use the root logger configured in the main app (app.py)
@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__) # Use module-specific logger
 
 # --- Blueprint Definition ---
 # Create a Blueprint named 'templates'. The main app (app.py) will register this.
-# Specify the template folder relative to the app's root template folder
-template_bp = Blueprint('templates', __name__, template_folder='../templates') # Point to the main templates folder
+# Point to the main 'templates' folder where HTML files reside.
+template_bp = Blueprint('templates', __name__, template_folder='../templates')
 
 # --- Helper Function: Placeholder Replacement ---
 # This function is part of the template blueprint as it defines how templates are interpreted.
@@ -59,15 +59,14 @@ def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id
         The template structure with placeholders replaced.
     """
     # Regex to find placeholders like {row.ColumnName} or {func.FunctionName}
-    # It captures the type (row/func) and name
     placeholder_pattern = re.compile(r'{(\w+)\.([^}]+)}') # Captures type (row/func) and name
 
     # --- Inner replacement function ---
     def perform_replace(text: str) -> str:
         """Performs replacements on a single string."""
-        # Check if input is actually a string
         if not isinstance(text, str):
-            return text # Return non-strings as is
+            # Return non-strings as is
+            return text
 
         # Function to handle each match found by the regex
         def replace_match(match):
@@ -76,7 +75,6 @@ def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id
 
             if placeholder_type == 'row':
                 # --- Case-insensitive lookup ---
-                # Find the matching key in row_data ignoring case
                 found_key = None
                 for key in row_data.keys():
                     # Compare lowercased keys
@@ -140,11 +138,34 @@ def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id
 
 @template_bp.route('/') # Route relative to the blueprint prefix ('/templates/')
 def template_manager_page():
-    """Renders the main template management UI page using an external HTML file."""
+    """
+    Renders the main template management UI page using an external HTML file.
+    Determines the correct 'Back' link URL based on session data.
+    """
     logger.info("Rendering template manager page.")
+
+    # Determine the URL for the 'Back' link
+    last_viewed = session.get('last_viewed_comparison')
+    if last_viewed:
+        # If a comparison page was last viewed, generate URL back to it
+        try:
+            back_url = url_for('ui.view_comparison', comparison_type=last_viewed)
+            logger.debug(f"Setting back URL to last viewed comparison: {last_viewed}")
+        except Exception as e:
+            # Handle cases where url_for might fail (e.g., invalid last_viewed value)
+            logger.warning(f"Could not build URL for last viewed comparison '{last_viewed}': {e}. Defaulting back URL.")
+            back_url = url_for('ui.upload_config_page')
+    else:
+        # Otherwise, link back to the main upload/config page
+        back_url = url_for('ui.upload_config_page')
+        logger.debug("Setting back URL to upload/config page (no last viewed comparison found in session).")
+
     # Render the template_manager.html file located in the main 'templates' folder
-    # Pass any necessary context variables if needed (e.g., list of templates if not loaded by JS)
-    return render_template('template_manager.html')
+    # Pass the calculated back_url to the template context
+    return render_template('template_manager.html', back_url=back_url)
+
+
+# --- API Endpoints for Templates ---
 
 @template_bp.route('/list', methods=['GET'])
 def list_templates():
@@ -336,6 +357,7 @@ def proxy_api_fetch():
         logger.info(f"Proxy fetching reference API: {url}")
 
         # Make the request to the target URL
+        # Consider adding headers if needed by the target API
         response = requests.get(url, timeout=10) # Use a reasonable timeout
         response.raise_for_status() # Raise HTTPError for bad status codes (4xx, 5xx)
 

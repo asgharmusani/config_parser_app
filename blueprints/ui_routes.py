@@ -10,11 +10,9 @@ import logging
 import math
 import os # Added for listing processed files
 from flask import (
-    Blueprint, render_template, request, redirect, url_for, current_app, flash
+    Blueprint, render_template, request, redirect, url_for, current_app, flash, session # Added session
 )
-from typing import Optional, Tuple
-
-# Note: Constants like DEFAULT_PAGE_SIZE are defined below, not imported from utils.
+from typing import Optional, Tuple, List, Dict, Any # Added List, Dict, Any
 
 # --- Constants (Defined locally for this blueprint) ---
 DEFAULT_PAGE_SIZE = 100
@@ -75,6 +73,7 @@ def view_comparison(comparison_type):
     """
     Displays a specific comparison type sheet with pagination and sorting.
     Renders the 'results_viewer.html' template.
+    Stores the viewed comparison type in the session.
 
     Args:
         comparison_type: The name of the comparison sheet to display
@@ -83,36 +82,35 @@ def view_comparison(comparison_type):
     logger.info(f"Request to view comparison type: {comparison_type}")
 
     # --- Get Data and Config from App Cache ---
-    # These values should have been populated by the /api/upload-process
-    # or /api/load-processed-file routes
     filename = current_app.config.get('EXCEL_FILENAME')
     all_data = current_app.config.get('EXCEL_DATA', {})
     available_sheets = current_app.config.get('COMPARISON_SHEETS', [])
     sheet_headers_map = current_app.config.get('SHEET_HEADERS', {})
-    error = None # Initialize error variable for this request
+    error = None
 
-    # Check if data is loaded; if not, redirect to the upload page with a message
+    # Check if data is loaded; redirect if not
     if not filename or not all_data or not available_sheets or not sheet_headers_map:
         error_msg = "No comparison data loaded. Please upload/process or load a file first."
         logger.warning(error_msg)
-        flash(error_msg, 'warning') # Use Flask flash messaging
-        return redirect(url_for('ui.upload_config_page')) # Redirect to upload page
+        flash(error_msg, 'warning')
+        return redirect(url_for('ui.upload_config_page'))
 
-    # Validate requested comparison type against available sheets and headers
+    # Validate requested comparison type
     if comparison_type not in all_data or comparison_type not in sheet_headers_map:
         logger.warning(f"Invalid comparison type requested or headers missing: '{comparison_type}'. Redirecting.")
         flash(f"Invalid comparison type requested: {comparison_type}", 'error')
-        # Redirect to the first available sheet or upload page if none exist
         if available_sheets:
              return redirect(url_for('ui.view_comparison', comparison_type=available_sheets[0]))
         else:
-             # Should not happen if initial check passed, but as fallback:
              return redirect(url_for('ui.upload_config_page'))
+
+    # Store last viewed page in session for the 'Back' link on template manager
+    session['last_viewed_comparison'] = comparison_type
+    logger.debug(f"Stored last viewed comparison in session: {comparison_type}")
 
     # --- Get Headers for current sheet ---
     current_headers = sheet_headers_map.get(comparison_type, [])
     if not current_headers:
-         # This case should be caught above, but defensive check
          logger.error(f"Headers not found for sheet: {comparison_type}. Cannot render table.")
          flash(f"Could not load headers for '{comparison_type}'.", 'error')
          return redirect(url_for('ui.upload_config_page'))
@@ -121,11 +119,10 @@ def view_comparison(comparison_type):
     try:
         page = request.args.get('page', 1, type=int)
         page_size_str = request.args.get('size', str(DEFAULT_PAGE_SIZE), type=str).lower()
-        # Default sort column is the first header read from the sheet
-        default_sort_col = current_headers[0]
+        default_sort_col = current_headers[0] # Default sort by first header
         sort_by = request.args.get('sort_by', default_sort_col, type=str)
         sort_order = request.args.get('order', 'asc', type=str).lower()
-    except (ValueError, IndexError): # Catch potential errors if headers are empty or params invalid
+    except (ValueError, IndexError):
         # Fallback to defaults if query parameters are invalid type or headers missing
         logging.warning("Invalid query parameter type or missing headers, using defaults.")
         page = 1
@@ -249,7 +246,6 @@ def view_comparison(comparison_type):
     return render_template(
         'results_viewer.html', # Use the external template file
         title=comparison_type.replace(COMPARISON_SUFFIX, ''), # Cleaner title for the page tab
-        # comparison_data=all_data, # No longer needed directly in template? Pass if required by includes.
         page_data=page_data,      # Pass only the data for the current page
         pagination=pagination_info, # Pass pagination details
         filename=filename, # Pass the source Excel filename
@@ -281,6 +277,7 @@ def refresh_data():
     # Reset max IDs
     current_app.config['MAX_DN_ID'] = 0
     current_app.config['MAX_AG_ID'] = 0
+    session.pop('last_viewed_comparison', None) # Clear last viewed page from session
     flash("Data cache cleared. Please upload an Excel file.", "info")
     # Redirect to the upload page
     return redirect(url_for('ui.upload_config_page'))
