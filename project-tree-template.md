@@ -1,0 +1,22 @@
+- .gitignore
+- api_fetching.py
+- app.py
+- comparison_logic.py
+- config.ini
+- config.py
+- excel_processing.py
+- utils.py
+- wheelhouse.tar.gz
+- blueprints/
+  - __init__.py
+  - processing_routes.py
+  - template_routes.py
+  - ui_routes.py
+- templates/
+  - _messages.html
+  - _simulation_modal.html
+  - base.html
+  - results_viewer.html
+  - template_manager.html
+  - upload_config.html
+- uploads/
