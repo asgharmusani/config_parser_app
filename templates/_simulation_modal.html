@@ -1,29 +1,31 @@
 {# --- Simulation Review Modal --- #}
-{# This is a partial template included in results_viewer.html #}
-{# It uses Tailwind CSS classes defined in the base template or CDN link #}
+{# This is a partial template, intended to be included in another template #}
+{# (e.g., results_viewer.html) where the simulation results are displayed. #}
+{# It relies on Tailwind CSS classes defined in the base template or via CDN. #}
 
-{# Main modal container, hidden by default, uses fixed positioning and z-index #}
+{# Main modal container: hidden by default, uses fixed positioning to overlay content, and z-index for stacking. #}
 <div id="simulationModal" class="fixed inset-0 z-30 overflow-y-auto hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
-  {# Modal wrapper for centering content #}
+  {# Modal wrapper for centering content vertically and horizontally #}
   <div class="flex items-end justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
 
-    {# Background overlay - clickable to close? (add JS if needed) #}
+    {# Background overlay: semi-transparent, covers the entire screen behind the modal. #}
+    {# Can be made clickable to close the modal with additional JavaScript. #}
     <div id="simulationModalBackdrop" class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" aria-hidden="true"></div>
 
-    {# This element is to trick the browser into centering the modal contents vertically. #}
+    {# This span is a trick to vertically align the modal in the middle of the screen for larger viewports. #}
     <span class="hidden sm:inline-block sm:align-middle sm:h-screen" aria-hidden="true">&#8203;</span>
 
-    {# Modal panel - main container for modal content #}
+    {# Modal panel: This is the main container for the modal's content. #}
     <div id="simulationModalContent" class="inline-block align-bottom bg-white rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-4xl sm:w-full">
       {# Modal Header Section #}
       <div class="bg-white px-4 pt-5 pb-4 sm:p-6 sm:pb-4">
         <div class="sm:flex sm:items-start">
-          {# Icon container #}
+          {# Icon container: Holds an icon related to the modal's purpose. #}
           <div class="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100 sm:mx-0 sm:h-10 sm:w-10">
-            {# Lucide icon (rendered by JS in parent template) #}
+            {# Lucide icon (will be rendered by JavaScript in the parent template) #}
             <i data-lucide="list-checks" class="h-6 w-6 text-blue-600"></i>
           </div>
-          {# Modal Title and Description #}
+          {# Modal Title and Descriptive Text #}
           <div class="mt-3 text-center sm:mt-0 sm:ml-4 sm:text-left w-full">
             <h3 class="text-lg leading-6 font-medium text-gray-900" id="modal-title">
               Review Generated Payloads
@@ -32,27 +34,27 @@
                <p class="text-sm text-gray-600 mb-3">
                  Review the JSON payloads that will be sent for update based on the selected template and rows. Errors encountered during generation are shown below.
                </p>
-               {# Area where the generated JSON will be displayed #}
+               {# Area where the generated JSON payloads will be displayed #}
                <div id="simulationResultsArea" class="text-sm">
-                    {# Initial placeholder text, replaced by JS #}
+                    {# Initial placeholder text, will be replaced by JavaScript with JSON data #}
                     <p class="italic text-gray-500">Generating simulation...</p>
                </div>
-               {# Area to display any errors from the simulation process #}
+               {# Area to display any errors that occurred during the simulation process #}
                <div id="simulationErrorsArea" class="mt-2 text-red-600 text-xs">
-                   {# Populated by JS if errors occur during simulation #}
+                   {# This area will be populated by JavaScript if errors occur #}
                </div>
             </div>
           </div>
         </div>
       </div>
-      {# Modal Footer Section with Buttons #}
+      {# Modal Footer Section: Contains action buttons #}
       <div class="bg-gray-50 px-4 py-3 sm:px-6 sm:flex sm:flex-row-reverse">
-        {# Confirm Button - Initially disabled, enabled by JS after successful simulation #}
+        {# Confirm Button: Initially disabled, enabled by JavaScript after successful simulation #}
         <button type="button" id="confirmUpdateButton" onclick="confirmUpdate()"
                 class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-green-600 text-base font-medium text-white hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 sm:ml-3 sm:w-auto sm:text-sm disabled:opacity-50" disabled>
           Confirm Update
         </button>
-        {# Cancel Button - Calls JS function to close the modal #}
+        {# Cancel Button: Calls JavaScript function to close the modal #}
         <button type="button" onclick="cancelSimulation()"
                 class="mt-3 w-full inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-base font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 sm:mt-0 sm:ml-3 sm:w-auto sm:text-sm">
           Cancel
