@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__) # Use module-specific logger
 
 # --- Constants (Copied from ui_viewer.py for use in read_comparison_data) ---
 COMPARISON_SUFFIX = " Comparison"
-# SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Not strictly needed if logic uses headers
 METADATA_SHEET_NAME = "Metadata"
 MAX_DN_ID_VALUE_CELL = "B1" # Cell containing Max DN ID value
 MAX_AG_ID_VALUE_CELL = "B2" # Cell containing Max AG ID value
@@ -37,22 +36,30 @@ def copy_cell_style(source_cell: openpyxl.cell.Cell, target_cell: openpyxl.cell.
     if source_cell.has_style:
         # Copy Font properties
         target_cell.font = Font(
-            name=source_cell.font.name, size=source_cell.font.size, bold=source_cell.font.bold,
-            italic=source_cell.font.italic, vertAlign=source_cell.font.vertAlign,
-            underline=source_cell.font.underline, strike=source_cell.font.strike,
+            name=source_cell.font.name,
+            size=source_cell.font.size,
+            bold=source_cell.font.bold,
+            italic=source_cell.font.italic,
+            vertAlign=source_cell.font.vertAlign,
+            underline=source_cell.font.underline,
+            strike=source_cell.font.strike,
             color=source_cell.font.color
         )
         # Copy Fill properties
         target_cell.fill = PatternFill(
-            fill_type=source_cell.fill.fill_type, start_color=source_cell.fill.start_color,
+            fill_type=source_cell.fill.fill_type,
+            start_color=source_cell.fill.start_color,
             end_color=source_cell.fill.end_color
         )
         # Copy Alignment properties
         if source_cell.alignment:
             target_cell.alignment = openpyxl.styles.Alignment(
-                horizontal=source_cell.alignment.horizontal, vertical=source_cell.alignment.vertical,
-                text_rotation=source_cell.alignment.text_rotation, wrap_text=source_cell.alignment.wrap_text,
-                shrink_to_fit=source_cell.alignment.shrink_to_fit, indent=source_cell.alignment.indent
+                horizontal=source_cell.alignment.horizontal,
+                vertical=source_cell.alignment.vertical,
+                text_rotation=source_cell.alignment.text_rotation,
+                wrap_text=source_cell.alignment.wrap_text,
+                shrink_to_fit=source_cell.alignment.shrink_to_fit,
+                indent=source_cell.alignment.indent
             )
         # Copy Number format
         target_cell.number_format = source_cell.number_format
@@ -164,6 +171,7 @@ def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id
                 else:
                     replacement = "" # Default to empty if no matching key found
                     logger.warning(f"Placeholder {{row.{placeholder_name}}} not found in row data keys: {list(row_data.keys())}")
+                # --- End Case-insensitive lookup ---
                 return str(replacement) # Ensure replacement is a string
 
             elif placeholder_type == 'func':
@@ -173,6 +181,7 @@ def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id
                         # Use the ID pre-generated for this specific row
                         return str(current_row_next_id)
                     else:
+                        # Log a warning if the placeholder is used but no ID was provided
                         logger.warning(f"Placeholder {{func.next_id}} used but no ID provided for this row.")
                         return "{ERROR:next_id_missing}" # Indicate error in output
                 else:
@@ -189,22 +198,23 @@ def replace_placeholders(template_data: Any, row_data: dict, current_row_next_id
     # --- End of inner replacement function ---
 
     # --- Main logic for traversing template data ---
+    # Process strings using the inner function
     if isinstance(template_data, str):
         return perform_replace(template_data)
+    # Recursively process dictionaries
     elif isinstance(template_data, dict):
-        # Recursively process dictionary values
         return {
             key: replace_placeholders(value, row_data, current_row_next_id)
             for key, value in template_data.items()
         }
+    # Recursively process lists
     elif isinstance(template_data, list):
-         # Recursively process list items
         return [
             replace_placeholders(item, row_data, current_row_next_id)
             for item in template_data
         ]
+    # Return numbers, booleans, None, etc., directly without modification
     else:
-        # Return numbers, booleans, None, etc., directly without modification
         return template_data
 
 
@@ -256,7 +266,7 @@ def read_comparison_data(filename: str) -> bool:
                 ag_id_val = metadata_sheet[MAX_AG_ID_VALUE_CELL].value
                 if ag_id_val is not None and str(ag_id_val).isdigit():
                     max_ag_id_from_metadata = int(ag_id_val)
-                    logging.info(f"Read Max AG ID from '{METADATA_SHEET_NAME}' ({MAX_AG_ID_VALUE_CELL}): {max_ag_id_from_metadata}")
+                    logger.info(f"Read Max AG ID from '{METADATA_SHEET_NAME}' ({MAX_AG_ID_VALUE_CELL}): {max_ag_id_from_metadata}")
                 else:
                      logging.warning(f"Value in '{METADATA_SHEET_NAME}' cell {MAX_AG_ID_VALUE_CELL} is not a valid number: '{ag_id_val}'. Using 0.")
 

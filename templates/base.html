@@ -20,7 +20,7 @@
         /* Add any base styles shared across all pages here */
         body {
             /* Add padding to the bottom to prevent content from being hidden by the fixed action bar */
-            padding-bottom: 5rem;
+            padding-bottom: 5rem; /* 80px */
         }
         /* Action Bar Styles */
         #actionBar {
@@ -52,6 +52,11 @@
             height: 1em;
             stroke-width: 2; /* Icon line thickness */
         }
+        /* Style for active nav link */
+        .nav-link-active {
+            border-color: #4f46e5 !important; /* indigo-500 */
+            color: #4f46e5 !important; /* indigo-600 */
+        }
 
         /* Add other base styles as needed */
     </style>
@@ -70,37 +75,78 @@
         <h1 class="text-3xl font-bold text-gray-800 mb-4">Excel vs API Comparison Report</h1>
 
         {# --- Display source filename if available (passed from Flask route) --- #}
+        {# 'filename' context variable is expected to be passed by routes rendering this base #}
         {% if filename %}
             <p class="mb-4 text-sm text-gray-500">
                 Source File: <code class="bg-gray-200 px-1 rounded">{{ filename }}</code>
             </p>
         {% endif %}
 
-        {# --- Navigation Block (can be overridden by extending templates) --- #}
+        {# --- Navigation Block --- #}
+        {# This block defines the main navigation bar for the application. #}
+        {# Child templates can override this if they need a completely different navigation structure. #}
         {% block navigation %}
-            {# Default navigation can go here, or leave empty if defined in child templates #}
+            <div class="mb-6 border-b border-gray-300">
+                <nav class="-mb-px flex space-x-6 overflow-x-auto pb-1" aria-label="Main Navigation">
+                    {# Link to Upload/Configure Page #}
+                    <a href="{{ url_for('ui.upload_config_page') }}"
+                       class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                              {% if request.endpoint == 'ui.upload_config_page' %} nav-link-active
+                              {% else %} border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 {% endif %}">
+                       Upload/Configure
+                    </a>
+
+                    {# Links to Comparison Views (Dynamically generated if data loaded) #}
+                    {# 'available_sheets' and 'comparison_suffix_for_template' are expected from the route context #}
+                    {% if available_sheets %}
+                         {% for sheet in available_sheets %}
+                            <a href="{{ url_for('ui.view_comparison', comparison_type=sheet) }}"
+                               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                                      {% if request.endpoint == 'ui.view_comparison' and request.view_args.comparison_type == sheet %} nav-link-active
+                                      {% else %} border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 {% endif %}">
+                                {# Display sheet name without the suffix #}
+                                {{ sheet.replace(comparison_suffix_for_template, '') }}
+                            </a>
+                        {% endfor %}
+                    {% else %}
+                         {# Optionally show a disabled state if no data is loaded #}
+                         <span class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 cursor-not-allowed">Results (None Loaded)</span>
+                    {% endif %}
+
+                    {# Link to DB Update Template Manager #}
+                    <a href="{{ url_for('templates.template_manager_page') }}"
+                       class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                              {% if request.endpoint.startswith('templates.') %} nav-link-active
+                              {% else %} border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 {% endif %}">
+                       DB Config Templates
+                    </a>
+                     {# Link to Excel Rule Manager #}
+                    <a href="{{ url_for('excel_rules.excel_rule_manager_page') }}"
+                       class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                              {% if request.endpoint.startswith('excel_rules.') %} nav-link-active
+                              {% else %} border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 {% endif %}">
+                       Excel Processing Rules
+                    </a>
+
+                     {# Reload Data Button (only relevant on viewer pages, but can be here) #}
+                     {# 'available_sheets' check makes it appear only when results are loaded #}
+                     {% if available_sheets %}
+                     <a href="{{ url_for('ui.refresh_data') }}" title="Clear loaded data cache"
+                        class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600">
+                        <i data-lucide="refresh-cw" class="inline-block w-4 h-4"></i> Clear Cache
+                     </a>
+                     {% endif %}
+                </nav>
+            </div>
         {% endblock %}
+        {# --- End Navigation Block --- #}
 
         {# --- General Message/Error Area --- #}
         {# This block can be used to display flash messages or other status updates #}
         <div id="generalMessageArea" class="mb-4">
              {% block messages %}
-                {# Default implementation using Flask's flash messaging system #}
-                {% with messages = get_flashed_messages(with_categories=true) %}
-                    {% if messages %}
-                        {% for category, message in messages %}
-                        {# Apply different background/text colors based on message category #}
-                        <div class="p-3 rounded-md text-sm mb-2 border
-                            {% if category == 'error' %} bg-red-100 text-red-700 border-red-300
-                            {% elif category == 'success' %} bg-green-100 text-green-700 border-green-300
-                            {% elif category == 'warning' %} bg-yellow-100 text-yellow-700 border-yellow-300
-                            {% else %} bg-blue-100 text-blue-700 border-blue-300 {% endif %}"
-                            role="alert">
-                            {{ message }} {# Display the flash message #}
-                        </div>
-                        {% endfor %}
-                    {% endif %}
-                {% endwith %}
+                {# Include the partial template for rendering flash messages #}
+                {% include '_messages.html' %}
              {% endblock %}
         </div>
 
@@ -125,7 +171,16 @@
     {# --- Initialize Lucide Icons --- #}
     {# This script call finds all elements with data-lucide attributes and renders the icons #}
     <script>
-      lucide.createIcons();
+      try {
+          // Ensure Lucide is loaded before calling this
+          if (typeof lucide !== 'undefined' && lucide.createIcons) {
+              lucide.createIcons();
+          } else {
+              console.warn("Lucide library not loaded or createIcons function not found.");
+          }
+      } catch (e) {
+          console.error("Error initializing Lucide icons:", e);
+      }
     </script>
 
     {# --- Block for page-specific JavaScript --- #}

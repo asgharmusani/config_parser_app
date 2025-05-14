@@ -1,324 +1,258 @@
 # -*- coding: utf-8 -*-
 """
-Handles reading and processing the Excel workbook.
-
-Core Functions:
-- identify_ideal_agent_column: Finds the 'Ideal Agent' column based on config.
-- process_sheet: Extracts entities (VQ, Skill, VAG, Skill Expr) and metadata
-                 (strike status, style) from a single sheet.
-- collect_routing_entities: Orchestrates processing all relevant sheets,
-                            resolves strike-through status, populates output sheets
-                            in the workbook, and prepares data for comparison.
+Processes data extracted by the ExcelRuleEngine, resolves strike-through status,
+creates output sheets in the workbook based ONLY on entities found by the rule engine,
+and prepares data structures for the comparison logic.
 """
 
 import logging
 import openpyxl
-from openpyxl.styles import Font # Needed for type hinting if used directly
-from openpyxl.utils import cell as openpyxl_cell_utils
-from typing import Dict, Any, Optional, Tuple, Set
+from openpyxl.styles import Font
+from openpyxl.utils import cell as openpyxl_cell_utils # For get_column_letter
+from typing import Dict, Any, Optional, Tuple, Set, List
 
-# Import utilities from utils.py
+# Import utility functions from utils.py
 try:
-    from utils import copy_cell_style, extract_skills
+    from utils import copy_cell_style
+    # extract_skills might be used if sub-entity extraction needs further processing here,
+    # but primarily it should be handled by the rule engine.
 except ImportError:
-    logging.error("Failed to import required functions from utils.py")
+    logging.error("Failed to import required functions from utils.py in excel_processing.py")
     # Define dummy functions or raise error if utils are critical
-    def copy_cell_style(s, t): pass
-    def extract_skills(e): return []
+    def copy_cell_style(s, t):
+        """Dummy function if import fails."""
+        pass
     # Consider raising an error here if utils are essential:
     # raise ImportError("Could not import utility functions. Ensure utils.py is present.")
 
 logger = logging.getLogger(__name__) # Use module-specific logger
 
-# --- Constants from Config (Passed as Arguments) ---
-# These were previously global, now passed via config dict or arguments
 
-# --- Helper Functions ---
-
-def identify_ideal_agent_column(sheet: openpyxl.worksheet.worksheet.Worksheet, config: Dict[str, Any]) -> Optional[int]:
+def resolve_strike_through_and_prepare_intermediate(
+    parsed_entities: Dict[str, List[Dict[str, Any]]]
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
     """
-    Identifies the column index for the 'Ideal Agent' column based on config.
-    Searches header row 1 (specifically Columns C & D) first, then checks a fallback cell.
+    Resolves strike-through status for items that might appear multiple times
+    (some struck, some not) and prepares the final intermediate data structure.
+    If an item is found both struck and not-struck, it's considered not-struck,
+    and the style from a non-struck occurrence is preferred.
 
     Args:
-        sheet: The openpyxl worksheet object.
-        config: The application configuration dictionary containing keys like
-                'ideal_agent_header_text' and 'ideal_agent_fallback_cell'.
+        parsed_entities: Output from ExcelRuleEngine.
+            Format: {'EntityName1': [row_data_dict1, row_data_dict2], ...}
+            Each row_data_dict contains extracted fields, 'strike' status,
+            and '_style_cell_object_'. The primary identifying value is expected
+            to be under a key like the entity name or 'primaryFieldKey' from the rule.
 
     Returns:
-        The column index (1-based) if found, otherwise None.
+        A dictionary where keys are entity names, and values are dictionaries
+        of items. Each item dictionary contains its resolved 'strike' status,
+        '_style_cell_object_', and all other extracted fields.
+        Format: {'EntityName1': {'item_key1': {'strike': False, '_style_cell_object_': ..., 'field1': ...}, ...}}
     """
-    header_text = config.get('ideal_agent_header_text', 'Ideal Agent') # Use default if key missing
-    fallback_cell_coord = config.get('ideal_agent_fallback_cell', 'C2') # Use default if key missing
-    logger.debug(f"Identifying '{header_text}' column in sheet: {sheet.title}")
+    logger.info("Resolving strike-through status and preparing intermediate data...")
+    intermediate_data_resolved: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-    # 1. Check headers in row 1, specifically columns C and D
-    for col_idx in [3, 4]:  # Column C=3, Column D=4
-        # Check if sheet has enough columns before accessing cell
-        if col_idx <= sheet.max_column:
-            cell_value = sheet.cell(row=1, column=col_idx).value
-            # Check if cell has a value and contains the header text
-            if cell_value and header_text in str(cell_value):
-                logger.debug(f"Found '{header_text}' in header row 1 at column {col_idx}")
-                return col_idx
-        else:
-            logger.debug(f"Sheet '{sheet.title}' has only {sheet.max_column} columns, cannot check column {col_idx} in header.")
+    # Iterate through each entity type (e.g., "VQs", "Skill_Expressions") from parsed_entities
+    for entity_name, entity_occurrences in parsed_entities.items():
+        if entity_name not in intermediate_data_resolved:
+            intermediate_data_resolved[entity_name] = {}
+        # This is a dictionary for the current entity type, e.g., intermediate_data_resolved['VQs']
+        # It will store items by their unique key_value, with resolved strike status.
+        processed_entity_items = intermediate_data_resolved[entity_name]
 
-    # 2. Check specific fallback cell from config if not found in header cols C/D
-    try:
-        # Convert cell coordinate like "C2" to row/col index
-        col_str, row_str = openpyxl_cell_utils.coordinate_to_tuple(fallback_cell_coord)
-        fallback_col_idx = openpyxl_cell_utils.column_index_from_string(col_str)
-        fallback_row_idx = int(row_str)
+        # Iterate through each occurrence of an item for the current entity type
+        for occurrence_data in entity_occurrences:
+            # Determine the primary key for this item.
+            # This relies on the rule engine outputting a consistent primary field.
+            # The rule should specify a 'primaryFieldKey'; if not, fallback to the entity 'name'.
+            # The value under this key in occurrence_data is the unique identifier for the item.
+            item_key_value = None
+            # The rule engine should have stored the primary value under the key defined by
+            # 'primaryFieldKey' in the rule, or rule['name'] if 'primaryFieldKey' was absent.
+            # We need to find this primary identifying value in the occurrence_data.
 
-        # Check if fallback cell is within sheet bounds
-        if fallback_row_idx <= sheet.max_row and fallback_col_idx <= sheet.max_column:
-            cell_value_fallback = sheet.cell(row=fallback_row_idx, column=fallback_col_idx).value
-            if cell_value_fallback and header_text in str(cell_value_fallback):
-                logger.debug(f"Found '{header_text}' at fallback cell {fallback_cell_coord} (Col {fallback_col_idx})")
-                return fallback_col_idx
-        else:
-            logger.warning(f"Fallback cell '{fallback_cell_coord}' is outside the bounds of sheet '{sheet.title}'.")
-
-    except Exception as e:
-         # Catch potential errors during coordinate conversion or cell access
-         logger.warning(f"Could not parse or check fallback cell '{fallback_cell_coord}': {e}")
-
-    # 3. If not found by either method
-    logger.warning(f"'{header_text}' column not found using header search (Cols C/D) or fallback cell '{fallback_cell_coord}' in sheet: {sheet.title}.")
-    return None
-
-
-def process_sheet(
-    sheet: openpyxl.worksheet.worksheet.Worksheet,
-    intermediate_data: Dict[str, Dict[str, Dict[str, Any]]],
-    config: Dict[str, Any],
-    excluded_sheets: Set[str]
-):
-    """
-    Processes a single sheet to extract routing entities and their strike status,
-    updating the intermediate_data dictionary according to the strike-preference rule.
-    Stores separate expr/ideal for skill_exprs.
-
-    Args:
-        sheet: The openpyxl worksheet object to process.
-        intermediate_data: The dictionary holding collected data across sheets.
-                           Structure: {"vqs": {name: details}, "skills": {name: details}, ...}
-                           Details: {"strike": bool, "style_cell": Cell, "expr": str?, "ideal": str?}
-        config: The loaded application configuration dictionary.
-        excluded_sheets: A set of sheet names to skip during processing.
-    """
-    if sheet.title in excluded_sheets:
-        logger.debug(f"Skipping sheet: {sheet.title} (excluded name)")
-        return
-
-    logging.info(f"Processing sheet: {sheet.title} (Max Row: {sheet.max_row}, Max Col: {sheet.max_column})")
-    ideal_agent_col_idx = identify_ideal_agent_column(sheet, config)
-    vag_sheet_name = config.get('vag_extraction_sheet', 'Default Targeting- Group') # Get from config or use default
-
-    # Helper for VQ, VAG, Skills (non-skill-expressions)
-    def update_intermediate_generic(data_dict: Dict, key: str, current_strike: bool, cell_obj: openpyxl.cell.Cell):
-        """Updates the dict for generic items, preferring non-struck entries."""
-        if not key: # Skip empty keys
-             return
-        # Check if item exists
-        if key not in data_dict:
-            # Add new item
-            data_dict[key] = {"strike": current_strike, "style_cell": cell_obj}
-            logging.debug(f"Sheet '{sheet.title}' Row {cell_obj.row}: Added new item '{key}' with strike={current_strike}")
-        # If item exists, update only if changing strike from True to False
-        elif data_dict[key]["strike"] and not current_strike:
-            data_dict[key]["strike"] = False
-            data_dict[key]["style_cell"] = cell_obj # Use style from non-struck cell
-            logging.debug(f"Sheet '{sheet.title}' Row {cell_obj.row}: Updated item '{key}' to strike=False")
-        # else: if existing is False, or both are True, no change needed
-
-    processed_cells = 0
-    # Iterate through all cells within the sheet's used range
-    for row_idx in range(1, sheet.max_row + 1):
-        for col_idx in range(1, sheet.max_column + 1):
-            cell = sheet.cell(row=row_idx, column=col_idx)
-
-            # Skip empty cells
-            if cell.value is None or str(cell.value).strip() == "":
-                continue
-
-            value_str = str(cell.value).strip()
-            # Determine strike status from cell font
-            strike = bool(cell.font and cell.font.strike)
-            processed_cells += 1
-
-            # --- Skill Expression Processing (Specific Handling) ---
-            if ">" in value_str:
-                # Normalize expression part
-                formatted_expr = value_str.replace(" ", "").replace('\u00A0', '').replace("|", " | ").replace("&", " & ")
-                ideal_agent_value = ""
-                # Get corresponding Ideal Agent value if column was found
-                if ideal_agent_col_idx:
-                    # Check bounds before accessing cell
-                    if ideal_agent_col_idx <= sheet.max_column:
-                        ideal_cell = sheet.cell(row=row_idx, column=ideal_agent_col_idx)
-                        ideal_agent_value = str(ideal_cell.value).strip() if ideal_cell.value else ""
-                        # Normalize ideal part as well
-                        ideal_agent_value = ideal_agent_value.replace(" ", "").replace('\u00A0', '').replace("|", " | ").replace("&", " & ")
-                    else:
-                        # Log if ideal agent column index is out of bounds for this sheet
-                        logging.warning(f"Ideal agent column {ideal_agent_col_idx} out of bounds for sheet '{sheet.title}' (max col: {sheet.max_column}) at row {row_idx}")
-
-                # Create the concatenated key used for comparison and storage
-                concatenated_value = f"{formatted_expr} {ideal_agent_value}".strip()
-                if not concatenated_value:
-                    # Skip if the key becomes empty after processing (e.g., only operators left)
-                    continue
-
-                # Update intermediate_data for skill_exprs directly (handles strike rule)
-                skill_expr_dict = intermediate_data["skill_exprs"]
-                if concatenated_value not in skill_expr_dict:
-                    # Add new skill expression entry with all details
-                    skill_expr_dict[concatenated_value] = {
-                        "strike": strike,
-                        "style_cell": cell,
-                        "expr": formatted_expr,  # Store separate expression
-                        "ideal": ideal_agent_value # Store separate ideal expression
-                    }
-                    logging.debug(f"Sheet '{sheet.title}' Row {cell.row}: Added new skill_expr '{concatenated_value}' with strike={strike}")
-                elif skill_expr_dict[concatenated_value]["strike"] and not strike:
-                    # Update existing entry if changing strike from True to False
-                    skill_expr_dict[concatenated_value]["strike"] = False
-                    skill_expr_dict[concatenated_value]["style_cell"] = cell # Use non-struck cell style
-                    # Keep original expr/ideal values associated with the key
-                    logging.debug(f"Sheet '{sheet.title}' Row {cell.row}: Updated skill_expr '{concatenated_value}' to strike=False")
-
-                # Also extract individual skills from the expression part for the "Skills" sheet
-                individual_skills = extract_skills(formatted_expr)
-                for skill in individual_skills:
-                     update_intermediate_generic(intermediate_data["skills"], skill, strike, cell)
-
-            # --- VQ Processing ---
-            # Check if it looks like a VQ name and NOT a skill expression
-            elif (value_str.startswith("VQ_") or value_str.startswith("vq_") or ("VQ" in value_str)) and ">" not in value_str:
-                 normalized_vq = value_str.replace(" ", "").replace('\u00A0', '')
-                 update_intermediate_generic(intermediate_data["vqs"], normalized_vq, strike, cell)
-
-            # --- VAG Processing (Only from specific sheet defined in config) ---
-            elif "VAG_" in value_str and sheet.title == vag_sheet_name:
-                 normalized_vag = value_str.replace(" ", "").replace('\u00A0', '')
-                 update_intermediate_generic(intermediate_data["vags"], normalized_vag, strike, cell)
-
-            # --- Simple Skill Check (Optional - Add if simple skills appear outside expressions) ---
-            # Example: Check if it looks like a skill name and not other patterns
-            # elif re.match(r'^[a-zA-Z0-9_]+$', value_str) and not any(x in value_str for x in ['>', 'VQ_', 'VAG_']):
-            #      update_intermediate_generic(intermediate_data["skills"], value_str, strike, cell)
-
-    logging.debug(f"Processed {processed_cells} non-empty cells in sheet '{sheet.title}'.")
+            # Attempt to find the primary identifying value.
+            # This logic assumes the rule engine stores the primary value under a key that matches the entity_name
+            # OR under a key specified by `primaryFieldKey` in the rule, which then became a key in occurrence_data.
+            # A more robust way is if the rule engine *always* puts the primary identifier value
+            # under a consistent, known key (e.g., '_primary_identifier_value_') in occurrence_data.
+            # For now, we try the entity_name as a key, then iterate other keys.
+            potential_key_value = None
+            # Check if the entity_name itself is a key in the occurrence_data.
+            # This would happen if the rule's 'primaryFieldKey' was not set or was the same as 'name'.
+            if entity_name in occurrence_data:
+                potential_key_value = occurrence_data[entity_name]
+            else:
+                # Fallback: iterate keys to find the first non-internal, non-detail one as the identifier.
+                # This is less reliable and depends on the order and nature of keys.
+                for k, v_val in occurrence_data.items():
+                    # Exclude internal keys and common detail keys that are unlikely to be primary identifiers.
+                    if not k.startswith('_') and k not in [
+                        'strike', 'expr', 'ideal', 'Expression', 'Ideal Expression',
+                        'Concatenated Key', 'ID', 'Status', 'Item' # Common column names
+                    ]:
+                        potential_key_value = v_val # Assume the value of this field is the identifier
+                        logger.debug(f"Using fallback key '{k}' with value '{v_val}' as identifier for entity '{entity_name}'.")
+                        break
+            item_key_value = str(potential_key_value) if potential_key_value is not None else None
 
 
-def collect_routing_entities(
+            if not item_key_value:
+                logger.warning(f"Could not determine item key for occurrence in '{entity_name}': {occurrence_data}")
+                continue # Skip this occurrence if no key can be found
+
+            current_strike = occurrence_data.get("strike", False)
+            style_cell = occurrence_data.get("_style_cell_object_") # Style from the cell where this item was identified
+
+            if item_key_value not in processed_entity_items:
+                # First time seeing this item key for this entity type
+                # Create a copy to avoid modifying the original parsed_entities dicts
+                processed_entity_items[item_key_value] = occurrence_data.copy()
+                # Ensure 'strike' and 'style_cell' are correctly set from this first occurrence
+                processed_entity_items[item_key_value]["strike"] = current_strike
+                if style_cell: # Only assign if a style cell was provided
+                    processed_entity_items[item_key_value]["_style_cell_object_"] = style_cell
+            else:
+                # Item key already exists, check strike-through resolution
+                existing_item = processed_entity_items[item_key_value]
+                # If the existing record for this item was marked as struck-through,
+                # but this new occurrence is NOT struck-through, then update the record.
+                if existing_item.get("strike", False) and not current_strike:
+                    existing_item["strike"] = False # Resolve to not struck-through
+                    if style_cell: # Prefer style from the non-struck cell
+                        existing_item["_style_cell_object_"] = style_cell
+                    # Update other fields from the non-struck occurrence if they differ.
+                    # This ensures data from a non-struck instance is preferred.
+                    for k, v_val in occurrence_data.items():
+                        if k not in ["strike", "_style_cell_object_"]:
+                            existing_item[k] = v_val
+    logger.info("Strike-through resolution complete.")
+    return intermediate_data_resolved
+
+
+def collect_and_write_excel_outputs(
     workbook: openpyxl.workbook.Workbook,
-    config: Dict[str, Any],
-    metadata_sheet_name: str # Pass metadata sheet name constant
+    parsed_entities: Dict[str, List[Dict[str, Any]]], # Output from ExcelRuleEngine
+    config: Dict[str, Any], # Application config (might not be heavily used here)
+    metadata_sheet_name: str,
+    sheets_to_remove_config: List[str] # Base list (e.g., just metadata sheet name)
 ) -> Tuple[Dict[str, Set[str]], Dict[str, Dict[str, Dict[str, Any]]]]:
     """
-    Processes workbook sheets using intermediate data structure, populates final
-    output sheets based on resolved strike status (incl. separate expr/ideal for Skill Expr),
-    and returns sheet data (non-struck only) for comparison AND the full intermediate data.
-    Modifies the workbook object in place by deleting/adding sheets.
+    Takes parsed entities from the rule engine, resolves strike-through,
+    creates output sheets in the workbook based *only* on entities found by the rule engine,
+    and prepares data structures for the comparison logic.
 
     Args:
-        workbook: The openpyxl Workbook object (loaded from the working copy).
-        config: The loaded application configuration dictionary.
-        metadata_sheet_name: The name defined for the metadata sheet.
+        workbook: The openpyxl.Workbook object to modify.
+        parsed_entities: The output from ExcelRuleEngine.process_workbook().
+                         Format: {'EntityName1': [row_data_dict1, ...], ...}
+                         Each row_data_dict should contain fields extracted by rules.
+        config: The application configuration dictionary (currently unused here but passed for future).
+        metadata_sheet_name: Name for the metadata sheet.
+        sheets_to_remove_config: Base list of sheets to ensure are removed (e.g., ["Metadata"]).
 
     Returns:
-        Tuple containing:
-        - sheet_data_for_comparison: Dict[str, Set[str]] - Sets of non-struck keys for comparison.
-        - intermediate_data: Dict[str, Dict[str, Dict[str, Any]]] - Full collected data with details.
+        A tuple containing:
+        - sheet_data_for_comparison: Dict[str, Set[str]] - Sets of non-struck primary keys
+                                     for each entity type, used by comparison_logic.
+        - intermediate_data_resolved: Dict - The fully processed and strike-resolved data.
     """
-    logging.info("Starting collection and processing of routing entities from workbook sheets.")
+    logger.info("Collecting entities and writing Excel output sheets based on rule engine output.")
 
-    # --- Intermediate Data Structure ---
-    # Stores details for each unique item found across all sheets
-    intermediate_data = {
-        "vqs": {}, "skills": {}, "skill_exprs": {}, "vags": {}
-    } # Format: {"Type": {"Name/Key": {"strike": bool, "style_cell": Cell, "expr"?: str, "ideal"?: str}}}
+    # 1. Resolve strike-through and prepare final intermediate data structure
+    # This aggregates multiple occurrences of the same item and resolves strike status.
+    intermediate_data_resolved = resolve_strike_through_and_prepare_intermediate(parsed_entities)
 
-    # Define structure and headers for the output sheets
-    output_sheet_specs = {
-        "Skill Expr": {"key": "skill_exprs", "headers": ["Expression", "Ideal Expression", "Concatenated Key", "HasStrikeThrough"]},
-        "VQ": {"key": "vqs", "headers": ["VQ Name", "HasStrikeThrough"]},
-        "VAG": {"key": "vags", "headers": ["VAG Name", "HasStrikeThrough"]},
-        "Skills": {"key": "skills", "headers": ["Skill", "HasStrikeThrough"]}
-    }
-    # Define names for comparison sheets
-    comparison_prefixes = {"Skill Expr": "Skill_exprs", "VQ": "Vqs", "VAG": "Vags", "Skills": "Skills"}
-    # List all sheets to remove (output, comparison, metadata)
-    sheets_to_remove = list(output_sheet_specs.keys()) + \
-                       [f"{comparison_prefixes[t]} Comparison" for t in output_sheet_specs.keys()] + \
-                       [metadata_sheet_name]
+    # 2. Remove old generated sheets
+    # Dynamically determine all sheets to remove based on resolved entities from the rule engine
+    all_sheets_to_remove = list(sheets_to_remove_config) # Start with base (e.g., Metadata)
+    for entity_name in intermediate_data_resolved.keys():
+        # Add the entity's output sheet name (which is the entity_name itself)
+        if entity_name not in all_sheets_to_remove:
+            all_sheets_to_remove.append(entity_name)
+        # Add the entity's comparison sheet name
+        comparison_sheet_name = f"{entity_name} Comparison"
+        if comparison_sheet_name not in all_sheets_to_remove:
+            all_sheets_to_remove.append(comparison_sheet_name)
 
-    # --- Phase 0: Remove old generated sheets ---
-    logging.info("Removing previously generated output/comparison/metadata sheets...")
-    for sheet_name in sheets_to_remove:
-         if sheet_name in workbook.sheetnames:
+    logger.info(f"Ensuring removal of sheets: {all_sheets_to_remove}")
+    for sheet_name_to_remove in all_sheets_to_remove:
+         if sheet_name_to_remove in workbook.sheetnames:
              try:
-                 del workbook[sheet_name]
-                 logging.debug(f"Removed existing sheet: {sheet_name}")
+                 del workbook[sheet_name_to_remove]
+                 logging.debug(f"Removed existing sheet: {sheet_name_to_remove}")
              except Exception as e:
-                 logging.warning(f"Could not remove sheet '{sheet_name}': {e}")
+                 logging.warning(f"Could not remove sheet '{sheet_name_to_remove}': {e}")
 
+    # 3. Create and Populate new output sheets from intermediate_data_resolved
+    logger.info("Populating dedicated output sheets based on processed entities...")
+    for entity_name, items_data in intermediate_data_resolved.items():
+        if not items_data: # Skip if no items for this entity after resolution
+            logger.info(f"No data found for entity '{entity_name}' after resolution, skipping output sheet creation.")
+            continue
 
-    # --- Phase 1: Process all sheets and populate intermediate_data ---
-    # Define the set of sheets to exclude from processing here
-    excluded_sheets_for_processing = set(sheets_to_remove) # Start with sheets we'll create/remove
-    # Add any other specific sheets to exclude if necessary
-    # excluded_sheets_for_processing.add("Instructions")
+        output_sheet = workbook.create_sheet(title=entity_name)
+        logger.debug(f"Created output sheet: {entity_name}")
 
-    for sheet in workbook.worksheets:
-        process_sheet(sheet, intermediate_data, config, excluded_sheets_for_processing)
-    logging.info("Finished processing all sheets, resolved strikethrough status.")
+        # Determine headers dynamically from the first item's keys (excluding internal/style keys)
+        # This assumes all items of an entity type have a similar structure from the rule engine.
+        sample_item = next(iter(items_data.values()), None)
+        if not sample_item:
+            logger.warning(f"No items to determine headers for entity '{entity_name}'. Skipping sheet population.")
+            continue
 
+        # Define a consistent order for headers if possible, or sort them.
+        # The 'primaryFieldKey' from the rule should ideally be the first column.
+        # For now, simple sort, excluding internal keys.
+        # This list of headers will define the columns in the output sheet.
+        headers = sorted([k for k in sample_item.keys() if not k.startswith('_') and k != 'strike'])
 
-    # --- Phase 2: Create/Populate Output Sheets from intermediate_data ---
-    logging.info("Populating dedicated output sheets (VQ, Skills, Skill Expr, VAG)...")
-    for title, spec in output_sheet_specs.items():
-        sheet = workbook.create_sheet(title=title)
-        # Write Headers and make bold
-        for col_idx, header in enumerate(spec["headers"], start=1):
-             sheet.cell(row=1, column=col_idx, value=header).font = Font(bold=True)
+        # Ensure "HasStrikeThrough" is the last column
+        if "HasStrikeThrough" in headers: # Should not be in headers from sample_item keys
+            headers.remove("HasStrikeThrough") # Remove if it accidentally got in
+        headers.append("HasStrikeThrough") # Add as the last header
 
-        row_num = 2 # Start writing data from row 2
-        data_items = intermediate_data.get(spec["key"], {}) # Get data for this type
+        # Write Headers to the new sheet
+        for col_idx, header_name in enumerate(headers, start=1):
+            output_sheet.cell(row=1, column=col_idx, value=header_name).font = Font(bold=True)
 
-        # Sort items alphabetically by key for consistent output order
-        for item_key, data in sorted(data_items.items()):
-             if title == "Skill Expr":
-                 # Populate the 4 columns for Skill Expr sheet
-                 sheet.cell(row=row_num, column=1, value=data.get("expr", "")) # Expression
-                 sheet.cell(row=row_num, column=2, value=data.get("ideal", "")) # Ideal Expression
-                 cell_key = sheet.cell(row=row_num, column=3, value=item_key) # Concatenated Key
-                 sheet.cell(row=row_num, column=4, value=str(data["strike"])) # HasStrikeThrough
-                 # Copy style from the representative cell found during processing to the Key cell
-                 copy_cell_style(data["style_cell"], cell_key)
-             else:
-                 # Standard 2-column population for VQ, VAG, Skills
-                 cell_a = sheet.cell(row=row_num, column=1, value=item_key) # Name
-                 sheet.cell(row=row_num, column=2, value=str(data["strike"])) # HasStrikeThrough
-                 # Copy style from the representative cell
-                 copy_cell_style(data["style_cell"], cell_a)
-             row_num += 1
-        logging.debug(f"Populated '{title}' sheet with {row_num - 2} items.")
+        # Write data rows to the new sheet
+        current_row_num = 2
+        # Sort items by their primary key for consistent order in the output sheet
+        for item_key, item_details in sorted(items_data.items()):
+            for col_idx, header_name in enumerate(headers, start=1):
+                if header_name == "HasStrikeThrough":
+                    cell_value = str(item_details.get("strike", False))
+                else:
+                    # Get value by header key from the item_details dictionary
+                    cell_value = item_details.get(header_name, "")
+
+                cell_to_write = output_sheet.cell(row=current_row_num, column=col_idx, value=cell_value)
+
+                # Apply style from the representative cell if this is the primary identifying field.
+                # This assumes the item_key itself is one of the header_name values
+                # or that a primary field key was used consistently by the rule engine.
+                # For simplicity, let's try to style the cell corresponding to the item_key if it's a header.
+                if header_name == item_key: # This condition might need adjustment
+                    style_cell_obj = item_details.get("_style_cell_object_")
+                    if style_cell_obj:
+                        copy_cell_style(style_cell_obj, cell_to_write)
+            current_row_num += 1
+        logging.debug(f"Populated '{entity_name}' output sheet with {current_row_num - 2} items.")
     logging.info("Finished populating output sheets.")
 
-    # --- Phase 3: Prepare data for comparison (only non-struck items' keys) ---
-    # This data structure is used by write_comparison_sheet
-    sheet_data_for_comparison = {
-        key: {name for name, data in items.items() if not data["strike"]} # Set of keys where strike is False
-        for key, items in intermediate_data.items()
-    }
+    # 4. Prepare data structures for comparison_logic.py
+    sheet_data_for_comparison: Dict[str, Set[str]] = {}
+    for entity_name, items_data in intermediate_data_resolved.items():
+        # Collect keys of non-struck items for comparison.
+        # The 'item_key' here is the primary identifier for each entity instance.
+        sheet_data_for_comparison[entity_name] = {
+            item_key for item_key, data in items_data.items() if not data.get("strike", False)
+        }
 
-    logging.info("Prepared final sheet data for comparison (non-struck items only).")
-    logging.debug(f"Comparison Data Summary: VQs={len(sheet_data_for_comparison['vqs'])}, Skills={len(sheet_data_for_comparison['skills'])}, SkillExprs={len(sheet_data_for_comparison['skill_exprs'])}, VAGs={len(sheet_data_for_comparison['vags'])}")
-
-    # Return both the comparison keys and the full intermediate data with details
-    return sheet_data_for_comparison, intermediate_data
+    logging.info("Prepared data for comparison logic.")
+    # The intermediate_data_resolved itself contains all details needed for "New in Sheet" items
+    # in the comparison sheets (like separate expr/ideal for skill expressions).
+    return sheet_data_for_comparison, intermediate_data_resolved
 

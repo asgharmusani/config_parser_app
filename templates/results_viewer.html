@@ -6,44 +6,97 @@
     {# Add any page-specific CSS or meta tags here if needed #}
     <style>
         /* Styles specific to the results viewer table */
-        tbody tr:nth-child(odd) { background-color: #f9fafb; } /* gray-50 */
-        tbody tr:hover { background-color: #f3f4f6; } /* gray-100 */
-        tbody tr.selected-row { background-color: #dbeafe !important; } /* blue-100 for selected rows */
-        th a { display: inline-flex; align-items: center; gap: 0.25rem; }
-        th a:hover { text-decoration: underline; }
-        .sort-icon { width: 1em; height: 1em; stroke-width: 2; }
+        tbody tr:nth-child(odd) {
+            background-color: #f9fafb; /* Tailwind gray-50 */
+        }
+        tbody tr:hover {
+            background-color: #f3f4f6; /* Tailwind gray-100 */
+        }
+        tbody tr.selected-row {
+            background-color: #dbeafe !important; /* Tailwind blue-100 for selected rows */
+        }
+        th a { /* Styling for sortable table headers */
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem; /* Space between text and sort icon */
+        }
+        th a:hover {
+            text-decoration: underline;
+        }
+        .sort-icon { /* Styling for sort direction icons */
+            width: 1em;   /* Equivalent to current font size */
+            height: 1em;  /* Equivalent to current font size */
+            stroke-width: 2; /* Icon line thickness */
+        }
     </style>
 {% endblock %}
 
 {% block navigation %}
     {# --- Navigation Tabs --- #}
     {# This block overrides the empty navigation block in base.html #}
+    {# It provides context-aware navigation for the results viewer #}
     <div class="mb-6 border-b border-gray-300">
         <nav class="-mb-px flex space-x-6 overflow-x-auto pb-1" aria-label="Tabs">
-            {# Links to Comparison Views - preserve sort/size #}
-            {% for sheet in available_sheets %}
-                <a href="{{ url_for('ui.view_comparison', comparison_type=sheet, sort_by=sort_by, order=sort_order, size=page_size_str) }}"
-                   class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
-                          {% if sheet == current_comparison_type %} border-indigo-500 text-indigo-600 {# Active tab style #}
-                          {% else %} border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 {% endif %}">
-                    {{ sheet.replace(comparison_suffix, '') }} {# Display cleaner name #}
-                </a>
-            {% endfor %}
-            {# Link to Template Manager #}
-            <a href="{{ url_for('templates.template_manager_page') }}"
-               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
-               Config Templates
-            </a>
-            {# Link back to Upload/Config page #}
+            {# Link to Upload/Configure Page - Always present #}
             <a href="{{ url_for('ui.upload_config_page') }}"
-               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
-               Upload/Config
+               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                      {% if request.endpoint == 'ui.upload_config_page' %}
+                          border-indigo-500 text-indigo-600 {# Active style #}
+                      {% else %}
+                          border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                      {% endif %}">
+               Upload/Configure
             </a>
-             {# Reload Data Button #}
-             <a href="{{ url_for('ui.refresh_data') }}" title="Reload data from Excel file"
-                class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600"> {# Prevent button shrinking #}
-                <i data-lucide="refresh-cw" class="inline-block w-4 h-4"></i> Reload Data
-             </a>
+
+            {# Links to Comparison Views - Dynamically generated if data is loaded #}
+            {# These variables (available_sheets, sort_by, etc.) are passed from the view_comparison route #}
+            {% if available_sheets %}
+                {% for sheet in available_sheets %}
+                    <a href="{{ url_for('ui.view_comparison', comparison_type=sheet, sort_by=sort_by, order=sort_order, size=page_size_str) }}"
+                       class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                              {% if sheet == current_comparison_type %}
+                                  border-indigo-500 text-indigo-600 {# Active tab style #}
+                              {% else %}
+                                  border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                              {% endif %}">
+                        {{ sheet.replace(comparison_suffix_for_template, '') }} {# Display cleaner sheet name #}
+                    </a>
+                {% endfor %}
+            {% else %}
+                 {# Fallback if no sheets are available (e.g., data not loaded yet) #}
+                 <span class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm border-transparent text-gray-400 cursor-not-allowed">
+                     Results (None Loaded)
+                 </span>
+            {% endif %}
+
+            {# Link to DB Update Template Manager #}
+            <a href="{{ url_for('templates.template_manager_page') }}"
+               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                      {% if request.endpoint.startswith('templates.') %}
+                          border-indigo-500 text-indigo-600 {# Active style #}
+                      {% else %}
+                          border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                      {% endif %}">
+               DB Config Templates
+            </a>
+            {# Link to Excel Rule Manager #}
+            <a href="{{ url_for('excel_rules.excel_rule_manager_page') }}"
+               class="whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm
+                      {% if request.endpoint.startswith('excel_rules.') %}
+                          border-indigo-500 text-indigo-600 {# Active style #}
+                      {% else %}
+                          border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300
+                      {% endif %}">
+               Excel Processing Rules
+            </a>
+
+             {# Reload Data Button - appears if data is loaded #}
+             {% if available_sheets %}
+                 <a href="{{ url_for('ui.refresh_data') }}" title="Clear loaded data cache and return to upload page"
+                    class="ml-auto flex-shrink-0 py-3 px-1 text-sm font-medium text-gray-500 hover:text-indigo-600"> {# Prevent button shrinking #}
+                    <i data-lucide="refresh-cw" class="inline-block w-4 h-4"></i> Clear Cache
+                 </a>
+             {% endif %}
         </nav>
     </div>
 {% endblock %}
@@ -67,22 +120,23 @@
         <div class="bg-white shadow-md rounded-lg overflow-hidden">
             {# Table Title and Selection Count #}
             <h2 class="text-xl font-semibold text-gray-700 bg-gray-100 px-6 py-3 border-b flex justify-between items-center">
-                <span>{{ current_comparison_type }}</span>
+                <span>{{ current_comparison_type }}</span> {# Display the name of the current comparison sheet #}
                 <span id="selectionCount" class="text-sm font-normal text-gray-600 mr-4" style="display: none;">0 rows selected</span>
             </h2>
-            {# Table container with horizontal scroll #}
+            {# Table container with horizontal scroll for responsiveness #}
             <div class="overflow-x-auto p-3">
-                {# Table - uses dynamic headers #}
+                {# Table - uses dynamic headers passed from the Flask route #}
                 <table id="dataTable" class="min-w-full divide-y divide-gray-200">
                     <thead class="bg-gray-50">
                         <tr>
-                            <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox col #}
+                            <th scope="col" class="w-10 px-4 py-3 text-center"> {# Checkbox column #}
                                 <input type="checkbox" id="selectAllCheckbox" onchange="toggleSelectAll(this.checked)"
                                        class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                             </th>
-                            {# Loop through headers provided by the route #}
+                            {# Loop through headers provided by the Flask route for the current sheet #}
                             {% for header in current_headers %}
-                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider {% if header == 'ID' or header == 'ID (from API)' %}whitespace-nowrap{% endif %}">
+                                <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider
+                                                       {% if header == 'ID' or header == 'ID (from API)' %}whitespace-nowrap{% endif %}"> {# Prevent ID column from wrapping #}
                                     {# Create sort link using the header name #}
                                     <a href="{{ url_for('ui.view_comparison', comparison_type=current_comparison_type, page=1, size=page_size_str, sort_by=header, order='desc' if sort_by == header and sort_order == 'asc' else 'asc') }}">
                                         {{ header }} {# Display header name #}
@@ -99,12 +153,12 @@
                         {% for row in page_data %}
                             {# --- Dynamic Row Identifier --- #}
                             {# Use the value from the first header column as the unique ID for the checkbox/data attribute #}
-                            {% set first_header = current_headers[0] if current_headers else 'UNKNOWN' %}
-                            {% set row_id = row.get(first_header) %}
-                            <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id | default('', True) }}">
+                            {% set first_header = current_headers[0] if current_headers else 'UNKNOWN_IDENTIFIER_KEY' %}
+                            {% set row_id_value = row.get(first_header) %}
+                            <tr id="row-{{ loop.index0 }}" data-row-id="{{ row_id_value | default('', True) }}">
                                 {# Checkbox Cell #}
                                 <td class="px-4 py-3 text-center">
-                                    <input type="checkbox" name="rowSelection" value="{{ row_id | default('', True) }}" onchange="handleRowSelectionChange()" class="row-checkbox h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
+                                    <input type="checkbox" name="rowSelection" value="{{ row_id_value | default('', True) }}" onchange="handleRowSelectionChange()" class="row-checkbox h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
                                 </td>
                                 {# --- Dynamic Data Cells --- #}
                                 {# Loop through headers again to display data for each column #}
@@ -113,11 +167,14 @@
                                     <td class="px-4 py-3 text-sm break-words
                                         {# Apply specific styles based on header name #}
                                         {% if header == 'ID' or header == 'ID (from API)' %}
-                                            text-gray-500 whitespace-nowrap {# Style ID column #}
+                                            text-gray-500 whitespace-nowrap {# Style ID column, prevent wrapping #}
                                         {% elif header == 'Status' %}
-                                            font-medium {% if 'New' in cell_value %} text-green-600 {% elif 'Missing' in cell_value %} text-red-600 {% else %} text-gray-600 {% endif %} {# Style Status column #}
+                                            font-medium {# Style Status column with conditional text color #}
+                                            {% if 'New' in cell_value %} text-green-600
+                                            {% elif 'Missing' in cell_value %} text-red-600
+                                            {% else %} text-gray-600 {% endif %}
                                         {% else %}
-                                            text-gray-900 {# Default style #}
+                                            text-gray-900 {# Default style for other columns #}
                                         {% endif %}">
                                         {{ cell_value }}
                                     </td>
@@ -134,22 +191,37 @@
                  <div class="flex items-center text-sm text-gray-700">
                      <label for="pageSize" class="mr-2">Show:</label>
                      <select id="pageSize" name="size" class="border border-gray-300 rounded-md text-sm p-1" onchange="handlePageSizeChange(this.value)">
-                         {% for size_option in page_size_options %} <option value="{{ size_option }}" {% if page_size_str == size_option|string %}selected{% endif %}>{{ size_option }}</option> {% endfor %}
+                         {% for size_option in page_size_options %}
+                            <option value="{{ size_option }}" {% if page_size_str == size_option|string %}selected{% endif %}>{{ size_option }}</option>
+                         {% endfor %}
                          <option value="all" {% if page_size_str == 'all' %}selected{% endif %}>All</option>
                      </select>
                      <span class="ml-2">results per page</span>
                  </div>
                  {# Right side: Pagination info and buttons #}
                  <div class="flex items-center">
-                     <p class="text-sm text-gray-700 mr-4 hidden md:block"> Showing <span class="font-medium">{{ pagination.start_item }}</span> to <span class="font-medium">{{ pagination.end_item }}</span> of <span class="font-medium">{{ pagination.total_items }}</span> results </p>
+                     <p class="text-sm text-gray-700 mr-4 hidden md:block">
+                         Showing <span class="font-medium">{{ pagination.start_item }}</span>
+                         to <span class="font-medium">{{ pagination.end_item }}</span>
+                         of <span class="font-medium">{{ pagination.total_items }}</span> results
+                     </p>
+                     {# Pagination buttons only shown if more than one page #}
                      {% if pagination.total_pages > 1 %}
                      <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
                           {# Previous Button #}
-                          <a href="{{ url_for('ui.view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}"> <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i> </a>
+                          <a href="{{ url_for('ui.view_comparison', comparison_type=current_comparison_type, page=pagination.prev_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_prev else '#' }}"
+                             class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_prev %} opacity-50 cursor-not-allowed {% endif %}">
+                              <span class="sr-only">Previous</span><i data-lucide="chevron-left" class="h-5 w-5"></i>
+                          </a>
                           {# Page Indicator #}
-                          <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex"> Page {{ pagination.page }} of {{ pagination.total_pages }} </span>
+                          <span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hidden sm:inline-flex">
+                            Page {{ pagination.page }} of {{ pagination.total_pages }}
+                          </span>
                           {# Next Button #}
-                          <a href="{{ url_for('ui.view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}"> <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i> </a>
+                          <a href="{{ url_for('ui.view_comparison', comparison_type=current_comparison_type, page=pagination.next_num, size=page_size_str, sort_by=sort_by, order=sort_order) if pagination.has_next else '#' }}"
+                             class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 {% if not pagination.has_next %} opacity-50 cursor-not-allowed {% endif %}">
+                              <span class="sr-only">Next</span><i data-lucide="chevron-right" class="h-5 w-5"></i>
+                          </a>
                      </nav>
                      {% endif %}
                  </div>
@@ -166,6 +238,7 @@
 
 {% block action_bar %}
     {# --- Action Bar Content (Overrides base.html block) --- #}
+    {# This bar appears at the bottom when rows are selected #}
     <span id="actionBarMessage" class="text-sm font-medium">Select rows to apply configuration.</span>
     <div class="flex items-center space-x-4">
          <label for="templateSelect" class="text-sm">Apply Template:</label>
@@ -241,7 +314,9 @@
       function handleRowSelectionChange() {
           document.querySelectorAll('.row-checkbox').forEach(cb => {
               const row = cb.closest('tr');
-              if (row) { row.classList.toggle('selected-row', cb.checked); }
+              if (row) {
+                  row.classList.toggle('selected-row', cb.checked);
+              }
           });
           updateSelectionCount();
       }
@@ -250,30 +325,39 @@
           rowCheckboxes.forEach(checkbox => {
               checkbox.checked = checked;
               const row = checkbox.closest('tr');
-               if (row) { row.classList.toggle('selected-row', checked); }
+               if (row) {
+                   row.classList.toggle('selected-row', checked);
+               }
           });
           updateSelectionCount();
       }
 
       // --- Initial Setup & Template Loading ---
       document.addEventListener('DOMContentLoaded', () => {
-          rowCheckboxes.forEach(checkbox => { checkbox.addEventListener('change', handleRowSelectionChange); });
-          if (selectAllCheckbox) { selectAllCheckbox.addEventListener('change', (e) => toggleSelectAll(e.target.checked)); }
+          rowCheckboxes.forEach(checkbox => {
+              checkbox.addEventListener('change', handleRowSelectionChange);
+          });
+          if (selectAllCheckbox) {
+              selectAllCheckbox.addEventListener('change', (e) => toggleSelectAll(e.target.checked));
+          }
           loadTemplatesForDropdown();
           updateSelectionCount();
       });
 
       async function loadTemplatesForDropdown() {
           try {
-              // Use url_for from the 'templates' blueprint
+              // Use url_for from the 'templates' blueprint (for DB update templates)
               const response = await fetch('{{ url_for("templates.list_templates") }}');
-              if (!response.ok) { throw new Error('Failed to fetch templates'); }
+              if (!response.ok) {
+                  throw new Error('Failed to fetch templates');
+              }
               const templates = await response.json();
               templateSelect.innerHTML = '<option value="">-- Select Template --</option>';
               if (templates.length > 0) {
                   templates.forEach(filename => {
                       const option = document.createElement('option');
-                      option.value = filename; option.textContent = filename.replace('.json', '');
+                      option.value = filename;
+                      option.textContent = filename.replace('.json', '');
                       templateSelect.appendChild(option);
                   });
                    templateSelect.disabled = false;
@@ -302,35 +386,54 @@
             // Get the unique identifier stored in the 'data-row-id' attribute of the parent row
             const selectedIds = Array.from(checkedBoxes).map(cb => cb.closest('tr').dataset.rowId).filter(id => id);
 
-            if (!selectedTemplate || selectedIds.length === 0) { alert('Please select rows and a template first.'); return; }
+            if (!selectedTemplate || selectedIds.length === 0) {
+                alert('Please select rows and a template first.');
+                return;
+            }
 
-            simulateButton.disabled = true; simulateButton.textContent = 'Simulating...';
+            simulateButton.disabled = true;
+            simulateButton.textContent = 'Simulating...';
             generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Running simulation...</div>`;
             simulationResultsArea.innerHTML = `<p class="italic text-gray-500">Generating simulation...</p>`;
-            simulationErrorsArea.textContent = ''; confirmUpdateButton.disabled = true;
+            simulationErrorsArea.textContent = '';
+            confirmUpdateButton.disabled = true;
 
             try {
                 // Use url_for from the 'processing' blueprint
                 const response = await fetch('{{ url_for("processing.simulate_configuration") }}', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ templateName: selectedTemplate, selectedRowsData: selectedIds })
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        templateName: selectedTemplate,
+                        selectedRowsData: selectedIds // Send identifiers
+                    })
                 });
                 const result = await response.json();
                 generalMessageArea.innerHTML = ''; // Clear processing message
 
                 if (response.ok && result.payloads) {
                     simulatedPayloads = result.payloads;
+                    // Display generated payloads nicely formatted
                     simulationResultsArea.innerHTML = `<pre class="json-preview">${JSON.stringify(simulatedPayloads, null, 2)}</pre>`;
-                    confirmUpdateButton.disabled = false;
-                    if (result.errors && result.errors.length > 0) { simulationErrorsArea.textContent = `Simulation Warnings/Errors: ${result.errors.join('; ')}`; }
-                    if (result.message) { console.log("Simulation status:", result.message); }
-                    simulationModal.classList.remove('hidden'); // Show modal
-                } else { throw new Error(result.error || `Simulation request failed with status ${response.status}`); }
+                    confirmUpdateButton.disabled = false; // Enable confirm button
+                    // Display any simulation warnings/errors
+                    if (result.errors && result.errors.length > 0) {
+                        simulationErrorsArea.textContent = `Simulation Warnings/Errors: ${result.errors.join('; ')}`;
+                    }
+                    if (result.message) {
+                        console.log("Simulation status:", result.message); // Log status message
+                    }
+                    simulationModal.classList.remove('hidden'); // Show the modal
+                } else {
+                    // Throw error if simulation failed
+                    throw new Error(result.error || `Simulation request failed with status ${response.status}`);
+                }
             } catch (error) {
                 console.error('Error during simulation:', error);
                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"> <strong class="font-bold">Simulation Error:</strong> ${error.message}. Check server logs. </div>`;
-                simulatedPayloads = [];
+                simulatedPayloads = []; // Clear any potentially stored payloads
             } finally {
+                 // Re-enable simulate button based on current selection state
                  simulateButton.disabled = selectedRowCount === 0 || templateSelect.value === "";
                  simulateButton.textContent = 'Simulate Update';
             }
@@ -338,33 +441,58 @@
 
       // 2. Confirm Update
       async function confirmUpdate() {
-            if (!simulatedPayloads || simulatedPayloads.length === 0) { alert("No simulation data available to confirm."); cancelSimulation(); return; }
+            // Check if there are payloads stored from the simulation step
+            if (!simulatedPayloads || simulatedPayloads.length === 0) {
+                alert("No simulation data available to confirm.");
+                cancelSimulation(); // Close modal if no data
+                return;
+            }
 
-            confirmUpdateButton.disabled = true; confirmUpdateButton.textContent = 'Updating...';
+            // --- UI Feedback: Start Confirmation ---
+            confirmUpdateButton.disabled = true; // Disable confirm button
+            confirmUpdateButton.textContent = 'Updating...'; // Change button text
+            // Display message in the main page area
             generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Confirming update (simulation)...</div>`;
-            simulationModal.classList.add('hidden'); // Hide modal
+            simulationModal.classList.add('hidden'); // Hide the review modal
 
             try {
-                // Use url_for from the 'processing' blueprint
+                 // --- API Call to Confirmation Endpoint ---
+                 // Use url_for from the 'processing' blueprint
                 const response = await fetch('{{ url_for("processing.confirm_update") }}', {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ payloads: simulatedPayloads })
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ payloads: simulatedPayloads }) // Send the stored payloads
                 });
-                const result = await response.json();
 
-                if (response.ok) {
-                     let messageClass = 'bg-green-100 border-green-300 text-green-700'; let title = 'Update Confirmed';
-                     if (response.status === 207 || (result.status && result.status.toLowerCase().includes('partial'))) { messageClass = 'bg-yellow-100 border-yellow-300 text-yellow-700'; title = 'Update Partially Confirmed / Warnings'; }
+                const result = await response.json(); // Expect {message, status, errors?}
+
+                 // --- UI Feedback: Display Confirmation Result ---
+                if (response.ok) { // Status 200-299 indicates success or partial success
+                     let messageClass = 'bg-green-100 border-green-300 text-green-700';
+                     let title = 'Update Confirmed';
+                     // Check for specific status codes or messages indicating partial success/warnings
+                     if (response.status === 207 || (result.status && result.status.toLowerCase().includes('partial'))) {
+                         messageClass = 'bg-yellow-100 border-yellow-300 text-yellow-700';
+                         title = 'Update Partially Confirmed / Warnings';
+                     }
+                     // Display success/warning message in the main message area
                      generalMessageArea.innerHTML = `<div class="${messageClass} px-4 py-3 rounded relative border" role="alert"> <strong class="font-bold">${title}:</strong> ${result.message || 'Update confirmed (simulation complete).'} ${result.errors ? `<br><span class='text-xs'>Errors: ${result.errors.join('; ')}</span>` : ''} </div>`;
-                     toggleSelectAll(false); // Clear selection on success
-                } else { throw new Error(result.error || `Confirmation failed with status ${response.status}`); }
+                     toggleSelectAll(false); // Clear row selection on success
+                } else {
+                    // Handle application-level errors reported by the backend
+                    throw new Error(result.error || `Confirmation failed with status ${response.status}`);
+                }
+
             } catch (error) {
+                 // Handle network errors or errors parsing the response
                  console.error('Error confirming update:', error);
                  generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"> <strong class="font-bold">Confirmation Error:</strong> ${error.message}. Check server logs. </div>`;
             } finally {
-                 confirmUpdateButton.disabled = false; confirmUpdateButton.textContent = 'Confirm Update';
-                 simulatedPayloads = []; // Clear stored payloads
-                 updateSelectionCount(); // Update action bar state
+                 // --- UI Feedback: End Confirmation ---
+                 confirmUpdateButton.disabled = false; // Re-enable confirm button (though modal is hidden)
+                 confirmUpdateButton.textContent = 'Confirm Update';
+                 simulatedPayloads = []; // Clear stored payloads after attempt
+                 updateSelectionCount(); // Update action bar state (likely becomes hidden)
             }
       }
 

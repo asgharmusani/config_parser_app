@@ -15,12 +15,12 @@ from flask import (
 from typing import Optional, Tuple, List, Dict, Any # Added List, Dict, Any
 
 # --- Constants (Defined locally for this blueprint) ---
+# These constants are used for pagination and template rendering logic.
 DEFAULT_PAGE_SIZE = 100
 PAGE_SIZE_OPTIONS = [100, 200, 500, 1000]
-COMPARISON_SUFFIX = " Comparison"
-# Keep SKILL_EXPR_SHEET_NAME if template uses it for conditional logic
-SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison"
-UPLOAD_FOLDER = './uploads' # Define upload folder path
+COMPARISON_SUFFIX = " Comparison" # Expected suffix for comparison sheet names in Excel
+SKILL_EXPR_SHEET_NAME = "Skill_exprs Comparison" # Specific sheet name for special handling
+UPLOAD_FOLDER = './uploads' # Directory where uploaded and processed files are stored
 
 
 # --- Logging ---
@@ -36,9 +36,11 @@ ui_bp = Blueprint('ui', __name__, template_folder='../templates')
 @ui_bp.route('/upload')
 def upload_config_page():
     """
-    Renders the initial page for uploading the Excel file and managing configuration.
-    Uses the 'upload_config.html' template.
-    Also lists existing processed files.
+    Renders the initial page ('upload_config.html').
+    This page allows users to:
+    1. Upload a new original Excel file for processing.
+    2. View and select from a list of previously processed Excel files.
+    3. View and modify application configuration settings (from config.ini).
     """
     logger.info("Rendering Upload/Configuration page.")
     # Fetch current application configuration settings to display in the form
@@ -50,8 +52,11 @@ def upload_config_page():
     if os.path.exists(UPLOAD_FOLDER):
         try:
             processed_files = sorted(
-                # List files ending with _processed.xlsx
-                [f for f in os.listdir(UPLOAD_FOLDER) if f.endswith('_processed.xlsx') and os.path.isfile(os.path.join(UPLOAD_FOLDER, f))],
+                # List files ending with _processed.xlsx and ensure they are files
+                [
+                    f for f in os.listdir(UPLOAD_FOLDER)
+                    if f.endswith('_processed.xlsx') and os.path.isfile(os.path.join(UPLOAD_FOLDER, f))
+                ],
                 # Sort by modification time, newest first
                 key=lambda f: os.path.getmtime(os.path.join(UPLOAD_FOLDER, f)),
                 reverse=True
@@ -59,17 +64,30 @@ def upload_config_page():
             logger.debug(f"Found processed files: {processed_files}")
         except Exception as e:
             logger.error(f"Error listing processed files in {UPLOAD_FOLDER}: {e}")
-            flash("Error listing previously processed files.", "error")
+            flash("Error listing previously processed files. Check logs.", "error")
     else:
         logger.warning(f"Upload folder '{UPLOAD_FOLDER}' does not exist. Cannot list processed files.")
 
+    # Pass necessary context for base.html's navigation, even if no data is loaded
+    available_sheets_for_nav = current_app.config.get('COMPARISON_SHEETS', [])
 
-    # Pass config and file list to the template
-    return render_template('upload_config.html', config=app_config, processed_files=processed_files)
+    # Pass config, file list, and navigation context to the template
+    return render_template(
+        'upload_config.html',
+        config=app_config,
+        processed_files=processed_files,
+        # Context for base.html's navigation
+        available_sheets=available_sheets_for_nav,
+        comparison_suffix_for_template=COMPARISON_SUFFIX, # Pass the constant
+        current_comparison_type=None, # No specific comparison type active here
+        sort_by=None,
+        sort_order=None,
+        page_size_str=str(DEFAULT_PAGE_SIZE)
+    )
 
 
 @ui_bp.route('/view/<comparison_type>')
-def view_comparison(comparison_type):
+def view_comparison(comparison_type: str):
     """
     Displays a specific comparison type sheet with pagination and sorting.
     Renders the 'results_viewer.html' template.
@@ -104,11 +122,9 @@ def view_comparison(comparison_type):
         else:
              return redirect(url_for('ui.upload_config_page'))
 
-    # Store last viewed page in session for the 'Back' link on template manager
     session['last_viewed_comparison'] = comparison_type
     logger.debug(f"Stored last viewed comparison in session: {comparison_type}")
 
-    # --- Get Headers for current sheet ---
     current_headers = sheet_headers_map.get(comparison_type, [])
     if not current_headers:
          logger.error(f"Headers not found for sheet: {comparison_type}. Cannot render table.")
@@ -119,168 +135,93 @@ def view_comparison(comparison_type):
     try:
         page = request.args.get('page', 1, type=int)
         page_size_str = request.args.get('size', str(DEFAULT_PAGE_SIZE), type=str).lower()
-        default_sort_col = current_headers[0] # Default sort by first header
+        default_sort_col = current_headers[0]
         sort_by = request.args.get('sort_by', default_sort_col, type=str)
         sort_order = request.args.get('order', 'asc', type=str).lower()
     except (ValueError, IndexError):
-        # Fallback to defaults if query parameters are invalid type or headers missing
-        logging.warning("Invalid query parameter type or missing headers, using defaults.")
-        page = 1
-        page_size_str = str(DEFAULT_PAGE_SIZE)
-        default_sort_col = current_headers[0] if current_headers else None
-        sort_by = default_sort_col
-        sort_order = 'asc'
-
+        logging.warning("Invalid query parameter type or missing headers during param parsing, using defaults.")
+        page = 1; page_size_str = str(DEFAULT_PAGE_SIZE); default_sort_col = current_headers[0] if current_headers else None; sort_by = default_sort_col; sort_order = 'asc'
 
     # --- Validate and process parameters ---
-    if page < 1:
-        page = 1 # Ensure page is at least 1
-    if sort_order not in ['asc', 'desc']:
-        sort_order = 'asc' # Default to ascending
-
-    # Use the actual headers read from the sheet as valid sort columns
+    if page < 1: page = 1
+    if sort_order not in ['asc', 'desc']: sort_order = 'asc'
     valid_sort_columns = current_headers
-    # If requested sort_by is invalid, revert to default (first header)
-    if sort_by not in valid_sort_columns:
-        sort_by = default_sort_col if default_sort_col else (current_headers[0] if current_headers else None) # Fallback needed if default was invalid
+    if sort_by not in valid_sort_columns: sort_by = default_sort_col if default_sort_col else (current_headers[0] if current_headers else None)
 
-    # Determine numeric page size
     show_all = (page_size_str == 'all')
-    page_size = DEFAULT_PAGE_SIZE # Default numeric size
+    page_size = DEFAULT_PAGE_SIZE
     if not show_all:
         try:
             requested_size = int(page_size_str)
-            # Use requested size only if it's one of the predefined valid options
-            if requested_size in PAGE_SIZE_OPTIONS:
-                 page_size = requested_size
-            # else: keep the default numeric page_size
-        except ValueError:
-            # If conversion fails (e.g., size=abc), reset string and use default numeric
-            page_size_str = str(DEFAULT_PAGE_SIZE)
-            # page_size already holds DEFAULT_PAGE_SIZE
+            if requested_size in PAGE_SIZE_OPTIONS: page_size = requested_size
+        except ValueError: page_size_str = str(DEFAULT_PAGE_SIZE)
 
     # --- Get Data and Sort ---
     current_sheet_data = all_data.get(comparison_type, [])
     total_items = len(current_sheet_data)
-    sorted_data = current_sheet_data # Default to unsorted if sorting fails or not applicable
+    sorted_data = current_sheet_data
 
-    if total_items > 0 and sort_by: # Only sort if there's data and a valid column to sort by
+    if total_items > 0 and sort_by:
         reverse_sort = (sort_order == 'desc')
-
-        # Sort key function (handles None, tries numeric for ID, defaults to string)
-        def sort_key(item):
-            """Generate a sort key for Python's sort, handling None and basic types."""
-            value = item.get(sort_by) # Get the value for the column we're sorting by
-
-            if value is None:
-                # Place None values consistently (e.g., at the end when ascending)
-                return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
+        def sort_key(item_row_dict: Dict[str, Any]) -> Tuple:
+            value = item_row_dict.get(sort_by)
+            if value is None: return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
             try:
-                # Try numeric sort for 'ID' column (or similar) if possible
-                # Check header name case-insensitively for flexibility
                 if sort_by.upper() == 'ID' or sort_by.upper() == 'ID (FROM API)':
-                    try:
-                        # Group numbers first
-                        return (0, float(value))
-                    except (ValueError, TypeError):
-                         # Treat non-numeric IDs as strings, group after numbers
-                        return (1, str(value).lower())
-                # Default: Case-insensitive string sort
+                    try: return (0, float(value))
+                    except (ValueError, TypeError): return (1, str(value).lower())
                 return (0, str(value).lower())
-            except Exception as e:
-                # Fallback for any unexpected error during value processing
-                logging.warning(f"Could not process value '{value}' for sorting by '{sort_by}': {e}")
-                 # Group these problematic values last
-                return (2, str(value).lower())
-
-        # Perform the sort
+            except Exception as e: logging.warning(f"Could not process value '{value}' for sorting by '{sort_by}': {e}"); return (2, str(value).lower())
         try:
             sorted_data = sorted(current_sheet_data, key=sort_key, reverse=reverse_sort)
         except Exception as sort_e:
-            # Handle potential errors during sorting (e.g., complex type issues)
             logging.error(f"Error during sorting data for '{comparison_type}': {sort_e}", exc_info=True)
-            error = f"Error sorting data by {sort_by}. Displaying unsorted." # Inform user via error var
-            # sorted_data remains the original current_sheet_data (unsorted)
+            error = f"Error sorting data by {sort_by}. Displaying unsorted."
+            sorted_data = current_sheet_data
 
     # --- Pagination ---
-    page_data = []
-    total_pages = 0
-    start_index = 0
-    end_index = 0
-
+    page_data = []; total_pages = 0; start_index = 0; end_index = 0
     if show_all:
-        # If showing all, set page to 1, one total page, and use all sorted data
-        page = 1
-        total_pages = 1 if total_items > 0 else 0
-        start_index = 0
-        end_index = total_items
-        page_data = sorted_data
+        page = 1; total_pages = 1 if total_items > 0 else 0; start_index = 0; end_index = total_items; page_data = sorted_data
     elif total_items > 0:
-        # Calculate total pages needed based on numeric page_size
-        total_pages = math.ceil(total_items / page_size)
-        # Adjust current page if it exceeds total pages (or is less than 1)
-        page = max(1, min(page, total_pages))
-        # Calculate start and end index for slicing
-        start_index = (page - 1) * page_size
-        end_index = start_index + page_size
-        # Get the slice of data for the current page
-        page_data = sorted_data[start_index:end_index]
-    # else: variables remain 0 / empty list if total_items is 0
+        total_pages = math.ceil(total_items / page_size); page = max(1, min(page, total_pages)); start_index = (page - 1) * page_size; end_index = start_index + page_size; page_data = sorted_data[start_index:end_index]
 
-    # Create pagination info dictionary for the template
-    pagination_info = {
-        'page': page,
-        'total_pages': total_pages,
-        'total_items': total_items,
-        'has_prev': page > 1 and not show_all, # Previous link only if not on page 1 and not showing all
-        'prev_num': page - 1,
-        'has_next': page < total_pages and not show_all, # Next link only if not on last page and not showing all
-        'next_num': page + 1,
-        'start_item': min(start_index + 1, total_items) if total_items > 0 else 0, # Displayed item range start (1-based)
-        'end_item': min(end_index, total_items) # Displayed item range end
-    }
+    pagination_info = { 'page': page, 'total_pages': total_pages, 'total_items': total_items, 'has_prev': page > 1 and not show_all, 'prev_num': page - 1, 'has_next': page < total_pages and not show_all, 'next_num': page + 1, 'start_item': min(start_index + 1, total_items) if total_items > 0 else 0, 'end_item': min(end_index, total_items) }
     logging.debug(f"Pagination for '{comparison_type}': Page {page}/{total_pages}, Size='{page_size_str}', Items {pagination_info['start_item']}-{pagination_info['end_item']} of {total_items}")
 
     # --- Render Template ---
-    # Pass all necessary data to the results_viewer.html template
     return render_template(
-        'results_viewer.html', # Use the external template file
-        title=comparison_type.replace(COMPARISON_SUFFIX, ''), # Cleaner title for the page tab
-        page_data=page_data,      # Pass only the data for the current page
-        pagination=pagination_info, # Pass pagination details
-        filename=filename, # Pass the source Excel filename
-        available_sheets=available_sheets, # Pass list of sheet names for navigation
-        current_comparison_type=comparison_type, # Pass the currently viewed sheet name
-        current_headers=current_headers, # Pass the actual headers for this sheet
-        sort_by=sort_by, # Pass current sort column
-        sort_order=sort_order, # Pass current sort order
-        page_size_str=page_size_str, # Pass page size selection (string 'all' or number)
-        page_size_options=PAGE_SIZE_OPTIONS, # Pass numeric page size options for dropdown
-        comparison_suffix=COMPARISON_SUFFIX, # Pass suffix constant if needed in template
-        skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME, # Pass constant for conditional rendering in template
-        error=error # Pass any error message encountered during processing
+        'results_viewer.html',
+        title=comparison_type.replace(COMPARISON_SUFFIX, ''),
+        page_data=page_data,
+        pagination=pagination_info,
+        filename=filename,
+        available_sheets=available_sheets,
+        current_comparison_type=comparison_type,
+        current_headers=current_headers,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        page_size_str=page_size_str,
+        page_size_options=PAGE_SIZE_OPTIONS,
+        comparison_suffix_for_template=COMPARISON_SUFFIX, # Pass the constant
+        skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME,
+        error=error
     )
 
 
 @ui_bp.route('/refresh')
 def refresh_data():
     """
-    Clears the cached Excel data (comparison results and metadata)
-    and redirects the user back to the upload page to load a new file.
+    Clears the cached Excel data and redirects to the upload page.
     """
     logger.info("Refresh request received. Clearing data cache.")
-    # Clear cached data in app config
     current_app.config['EXCEL_DATA'] = {}
     current_app.config['EXCEL_FILENAME'] = None
     current_app.config['COMPARISON_SHEETS'] = []
     current_app.config['SHEET_HEADERS'] = {}
-    # Reset max IDs
     current_app.config['MAX_DN_ID'] = 0
     current_app.config['MAX_AG_ID'] = 0
-    session.pop('last_viewed_comparison', None) # Clear last viewed page from session
+    session.pop('last_viewed_comparison', None)
     flash("Data cache cleared. Please upload an Excel file.", "info")
-    # Redirect to the upload page
     return redirect(url_for('ui.upload_config_page'))
-
-# Add other UI-related routes here if needed (e.g., help page, about page)
 

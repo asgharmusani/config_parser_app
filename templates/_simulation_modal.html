@@ -1,7 +1,6 @@
 {# --- Simulation Review Modal --- #}
-{# This is a partial template, intended to be included in another template #}
-{# (e.g., results_viewer.html) where the simulation results are displayed. #}
-{# It relies on Tailwind CSS classes defined in the base template or via CDN. #}
+{# This is a partial template included in results_viewer.html #}
+{# It uses Tailwind CSS classes defined in the base template or CDN link #}
 
 {# Main modal container: hidden by default, uses fixed positioning to overlay content, and z-index for stacking. #}
 <div id="simulationModal" class="fixed inset-0 z-30 overflow-y-auto hidden" aria-labelledby="modal-title" role="dialog" aria-modal="true">
@@ -34,14 +33,14 @@
                <p class="text-sm text-gray-600 mb-3">
                  Review the JSON payloads that will be sent for update based on the selected template and rows. Errors encountered during generation are shown below.
                </p>
-               {# Area where the generated JSON payloads will be displayed #}
+               {# Area where the generated JSON will be displayed #}
                <div id="simulationResultsArea" class="text-sm">
                     {# Initial placeholder text, will be replaced by JavaScript with JSON data #}
                     <p class="italic text-gray-500">Generating simulation...</p>
                </div>
-               {# Area to display any errors that occurred during the simulation process #}
+               {# Area to display any errors from the simulation process #}
                <div id="simulationErrorsArea" class="mt-2 text-red-600 text-xs">
-                   {# This area will be populated by JavaScript if errors occur #}
+                   {# This area will be populated by JavaScript if errors occur during simulation #}
                </div>
             </div>
           </div>

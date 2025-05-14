@@ -1,0 +1,314 @@
+{% extends "base.html" %} {# Inherit from the base layout #}
+
+{% block title %}Excel Processing Rule Manager{% endblock %}
+
+{% block head %}
+    {# Add any page-specific CSS or meta tags here if needed #}
+    <style>
+        /* Basic styling for elements on this page */
+        .json-display { /* Style for displaying JSON content */
+            background-color: #f3f4f6; /* gray-100 */
+            border: 1px solid #d1d5db; /* gray-300 */
+            padding: 1rem;
+            border-radius: 0.375rem; /* rounded-md */
+            max-height: 300px; /* Limit height and allow scrolling */
+            overflow-y: auto;
+            white-space: pre-wrap; /* Allow wrapping */
+            word-wrap: break-word; /* Break long words */
+            font-family: monospace; /* Use monospace font for code */
+            font-size: 0.875rem; /* text-sm */
+        }
+        textarea#excelRuleContent { /* Style for the template editor textarea */
+            font-family: monospace;
+            font-size: 0.875rem; /* text-sm */
+            min-height: 400px; /* Set a minimum height for better editing */
+            line-height: 1.5;
+        }
+        /* Style for code examples in help text */
+        code {
+            background-color: #e5e7eb; /* gray-200 */
+            padding: 0.1em 0.3em;
+            border-radius: 0.25em; /* rounded-sm */
+            font-size: 0.9em;
+        }
+        .help-text ul {
+            margin-top: 0.25rem;
+            margin-bottom: 0.5rem;
+        }
+        .help-text li {
+            margin-bottom: 0.25rem;
+        }
+        .help-text strong {
+            font-weight: 600;
+        }
+    </style>
+{% endblock %}
+
+{% block navigation %}
+    {# Link back to Upload/Config page #}
+    <div class="mb-6">
+        {# The back_url variable is passed from the excel_rule_manager_page route #}
+        <a href="{{ back_url | default(url_for('ui.upload_config_page')) }}" class="text-indigo-600 hover:text-indigo-800 text-sm">
+            &larr; Back to {% if session.get('last_viewed_comparison') and back_url != url_for('ui.upload_config_page') %}Results Viewer{% else %}Upload/Configure{% endif %}
+        </a>
+    </div>
+{% endblock %}
+
+
+{% block messages %}
+    {# Override the default message block to place messages specifically for this page #}
+    <div id="excelRuleMessageArea" class="mb-4">
+        {# Flash messages can also be rendered here if setup in Flask #}
+        {% include '_messages.html' %} {# Include the partial for flash messages #}
+    </div>
+{% endblock %}
+
+
+{% block content %}
+    {# Main grid layout: Lister | Editor #}
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        {# Column 1: Excel Rule Template Lister #}
+        <div class="md:col-span-1 bg-white p-4 shadow rounded-lg">
+            <h2 class="text-xl font-semibold mb-3 border-b pb-2">Existing Excel Rule Templates</h2>
+            {# List element populated by JavaScript #}
+            <ul id="excelRuleTemplateList" class="list-none space-y-2">
+                 <li class="text-gray-500 italic">Loading...</li> {# Loading indicator #}
+            </ul>
+        </div>
+
+        {# Column 2: Excel Rule Template Editor/Creator #}
+        <div class="md:col-span-2 bg-white p-4 shadow rounded-lg">
+            <h2 class="text-xl font-semibold mb-3 border-b pb-2">Create / Edit Excel Rule Template</h2>
+
+            {# Template Definition Text Area #}
+            <div class="mb-4">
+                <label for="excelRuleContent" class="block text-sm font-medium text-gray-700 mb-1">Rule Template JSON Structure:</label>
+                <textarea id="excelRuleContent" rows="20"
+                    placeholder='{\n  "Entities": [\n    {\n      "name": "VQs",\n      "enabled": true,\n      "sheets": ["Sheet1", "OptionalSheet2"],\n      "identifier": {"type": "startsWith", "value": "VQ_", "checkForStrikethrough": true},\n      "replaceRules": [{"find": " ", "replace": ""}, {"find": "\\u00A0", "replace": ""}],\n      "primaryFieldKey": "VQ Name" \n    },\n    {\n      "name": "Skill_Expressions",\n      "enabled": true,\n      "identifier": {"type": "contains", "value": ">", "checkForStrikethrough": true},\n      "replaceRules": [\n        {"find": " ", "replace": ""},\n        {"find": "|", "replace": " | "},\n        {"find": "&", "replace": " & "}\n      ],\n      "primaryFieldKey": "Concatenated Key",\n      "fetchAdditionalColumn": {\n        "targetKeyName": "IdealAgentExpression",\n        "searchHeaderName": "Ideal Agent",\n        "searchIn": ["C", "D", "C1"],\n        "replaceRules": [{"find": " ", "replace": ""}]\n      },\n      "extractSubEntities": {\n        "subEntityName": "Skills",\n        "sourceValue": "primary", \n        "regex": "\\\\b([a-zA-Z0-9_]+)(?=>\\\\d+)",\n        "checkForStrikethrough": true \n      }\n    }\n  ]\n}'
+                    class="w-full border border-gray-300 rounded-md p-2 focus:ring-indigo-500 focus:border-indigo-500"></textarea>
+
+                {# Help text explaining placeholder syntax #}
+                <div class="text-xs text-gray-600 mt-2 space-y-2 help-text">
+                    <p>Define rules for how entities are extracted from Excel sheets.</p>
+                    <p><strong>Main Structure:</strong> An object with an "Entities" key, which holds a list of entity rule objects.</p>
+                    <p><strong>Entity Rule Object Keys:</strong></p>
+                    <ul class="list-disc list-inside ml-4">
+                        <li><code>name</code> (string, required): Name for this entity type (e.g., "VQs", "SkillExpressions"). Used for output sheet names and internal data keys.</li>
+                        <li><code>enabled</code> (boolean, required): Set to <code>true</code> to process this rule, <code>false</code> to disable.</li>
+                        <li><code>sheets</code> (list of strings, optional): If provided, only these specific sheet names will be processed for this entity. If omitted, all sheets are considered (respecting global exclusions).</li>
+                        <li><code>identifier</code> (object, required): Defines how to identify a cell as belonging to this entity.
+                            <ul class="list-circle list-inside ml-4">
+                                <li><code>type</code> (string, required): "startsWith", "contains", "exactMatch", or "regex".</li>
+                                <li><code>value</code> (string, required): The string or regex pattern to match.</li>
+                                <li><code>checkForStrikethrough</code> (boolean, optional, default: false): If true, the strikethrough status of the identified cell is considered.</li>
+                            </ul>
+                        </li>
+                        <li><code>primaryFieldKey</code> (string, optional): The key name to use for the primary identified value in the extracted data. If omitted, defaults to the entity <code>name</code>. Example: <code>"VQ Name"</code>.</li>
+                        <li><code>replaceRules</code> (list of objects, optional): Rules to clean the primary identified cell value. Each object: <code>{"find": "string_to_find", "replace": "replacement_string"}</code>. Applied in order.</li>
+                        <li><code>fetchAdditionalColumn</code> (object, optional): To get data from another column in the same row.
+                            <ul class="list-circle list-inside ml-4">
+                                <li><code>targetKeyName</code> (string, required): How the fetched data will be keyed in the row's data (e.g., "IdealAgentExpression").</li>
+                                <li><code>searchHeaderName</code> (string, required): The header text to find (e.g., "Ideal Agent").</li>
+                                <li><code>searchIn</code> (list of strings, required): Column letters (e.g., <code>["C", "D"]</code>) or cell addresses of headers (e.g., <code>["C1", "D1"]</code>). First match is used.</li>
+                                <li><code>replaceRules</code> (list of objects, optional): Cleaning rules for the fetched additional column value.</li>
+                            </ul>
+                        </li>
+                        <li><code>extractSubEntities</code> (object, optional): To extract multiple values from a single cell value (e.g., skills from an expression).
+                            <ul class="list-circle list-inside ml-4">
+                                <li><code>subEntityName</code> (string, required): Key for the list of extracted sub-entities (e.g., "Skills").</li>
+                                <li><code>sourceValue</code> (string, optional, default: "primary"): Either "primary" (to use the main identified cell's value) or "additional.targetKeyName" (to use a value from <code>fetchAdditionalColumn</code>).</li>
+                                <li><code>regex</code> (string, required): Regex pattern with one capturing group for the value to extract.</li>
+                                <li><code>checkForStrikethrough</code> (boolean, optional, default: false): If true, sub-entities inherit strike status from the primary cell.</li>
+                                <li><code>replaceRules</code> (list of objects, optional): Cleaning rules for each extracted sub-entity value.</li>
+                            </ul>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+
+            {# Saving Section #}
+            <div class="flex items-center space-x-3">
+                 <label for="excelRuleTemplateName" class="text-sm font-medium text-gray-700">Save as:</label>
+                 <input type="text" id="excelRuleTemplateName" placeholder="Rule Template Name (e.g., VQ_and_Skills_Rules)"
+                        class="flex-grow border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                 <button onclick="saveExcelRuleTemplate()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded-md text-sm">Save Rule Template</button>
+            </div>
+            <p class="text-xs text-gray-500 mt-1">Filename will be saved as <code>./excel_rule_templates/&lt;Template Name&gt;.json</code>.</p>
+
+        </div>
+    </div> {# End Grid #}
+{% endblock %}
+
+
+{% block action_bar %}
+    {# No action bar needed on this page, override base block to be empty #}
+{% endblock %}
+
+
+{% block scripts %}
+    {# --- Page-Specific JavaScript --- #}
+    <script>
+      // --- DOM Element References ---
+      const ruleTemplateListEl = document.getElementById('excelRuleTemplateList');
+      const ruleContentEl = document.getElementById('excelRuleContent');
+      const ruleTemplateNameEl = document.getElementById('excelRuleTemplateName');
+      // Use a different ID for message area to avoid conflict if this page is complex
+      const ruleMessageAreaEl = document.getElementById('excelRuleMessageArea'); // Or use the general one if simple
+
+      // --- State Variable ---
+      let currentEditingExcelRuleTemplate = null; // Track which rule template is loaded
+
+       // --- Utility: Message Display (can be shared if moved to base.html script block) ---
+      function showRuleMessage(text, isError = false) {
+          ruleMessageAreaEl.innerHTML = ''; // Clear previous messages
+          const messageDiv = document.createElement('div');
+          messageDiv.textContent = text;
+          messageDiv.className = `p-3 rounded-md text-sm mb-3 border ${isError ? 'bg-red-100 text-red-700 border-red-300' : 'bg-green-100 text-green-700 border-green-300'}`;
+          messageDiv.setAttribute('role', 'alert');
+          ruleMessageAreaEl.appendChild(messageDiv);
+          setTimeout(() => { messageDiv.remove(); }, 5000); // Auto-hide
+      }
+
+      // --- Excel Rule Template Loading Functions ---
+      async function loadExcelRuleTemplateList() {
+          ruleTemplateListEl.innerHTML = '<li class="text-gray-500 italic">Loading...</li>';
+          try {
+              const response = await fetch('{{ url_for("excel_rules.list_excel_rule_templates") }}');
+              if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const templates = await response.json();
+              ruleTemplateListEl.innerHTML = ''; // Clear list
+              if (templates.length === 0) {
+                  ruleTemplateListEl.innerHTML = '<li class="text-gray-500 italic">No Excel rule templates found. Create one!</li>';
+              } else {
+                  templates.forEach(filename => {
+                      const li = document.createElement('li');
+                      li.className = 'flex justify-between items-center text-sm border-b pb-1';
+                      const baseName = filename.replace('.json', '');
+                      const nameSpan = document.createElement('span');
+                      nameSpan.textContent = baseName;
+                      nameSpan.className = 'cursor-pointer hover:text-indigo-600';
+                      nameSpan.onclick = () => loadExcelRuleTemplateContent(filename);
+                      const actionsDiv = document.createElement('div');
+                      actionsDiv.className = 'space-x-2';
+                      const viewButton = document.createElement('button');
+                      viewButton.innerHTML = '<i data-lucide="eye" class="w-4 h-4 text-blue-500 hover:text-blue-700"></i>';
+                      viewButton.title = 'View/Edit';
+                      viewButton.onclick = () => loadExcelRuleTemplateContent(filename);
+                      const deleteButton = document.createElement('button');
+                      deleteButton.innerHTML = '<i data-lucide="trash-2" class="w-4 h-4 text-red-500 hover:text-red-700"></i>';
+                      deleteButton.title = 'Delete';
+                      deleteButton.onclick = () => deleteExcelRuleTemplate(filename);
+                      actionsDiv.appendChild(viewButton);
+                      actionsDiv.appendChild(deleteButton);
+                      li.appendChild(nameSpan);
+                      li.appendChild(actionsDiv);
+                      ruleTemplateListEl.appendChild(li);
+                   });
+                  lucide.createIcons(); // Render icons
+              }
+          } catch (error) {
+              console.error('Error loading Excel rule template list:', error);
+              ruleTemplateListEl.innerHTML = '<li class="text-red-600 italic">Error loading rule templates.</li>';
+              showRuleMessage('Failed to load Excel rule template list.', true);
+          }
+      }
+
+      async function loadExcelRuleTemplateContent(filename) {
+          currentEditingExcelRuleTemplate = filename;
+          const baseName = filename.replace('.json', '');
+          ruleTemplateNameEl.value = baseName;
+          ruleContentEl.value = 'Loading...';
+          ruleMessageAreaEl.innerHTML = ''; // Clear messages
+          try {
+              const url = `{{ url_for("excel_rules.get_excel_rule_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", encodeURIComponent(filename));
+              const response = await fetch(url);
+              if (!response.ok) {
+                  throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const content = await response.json();
+              ruleContentEl.value = JSON.stringify(content, null, 2); // Pretty print
+          } catch (error) {
+              console.error(`Error loading Excel rule template ${filename}:`, error);
+              ruleContentEl.value = `Error loading rule template: ${error.message}`;
+              showRuleMessage(`Failed to load rule template '${baseName}'.`, true);
+              currentEditingExcelRuleTemplate = null;
+          }
+      }
+
+      // --- Excel Rule Template Saving Function ---
+      async function saveExcelRuleTemplate() {
+          const name = ruleTemplateNameEl.value.trim();
+          const content = ruleContentEl.value.trim();
+          ruleMessageAreaEl.innerHTML = '';
+          if (!name) { showRuleMessage('Rule template name cannot be empty.', true); ruleTemplateNameEl.focus(); return; }
+          if (/[\\/]/.test(name)) { showRuleMessage('Rule template name contains invalid characters (\\ or /).', true); ruleTemplateNameEl.focus(); return; }
+          let jsonData;
+          try { jsonData = JSON.parse(content); } // Validate JSON
+          catch (error) { showRuleMessage(`Invalid JSON format: ${error.message}`, true); ruleContentEl.focus(); return; }
+          const filename = name + '.json';
+          try {
+              const response = await fetch('{{ url_for("excel_rules.save_excel_rule_template") }}', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ filename: filename, content: jsonData })
+              });
+              const result = await response.json();
+              if (response.ok) { showRuleMessage(result.message || 'Rule template saved successfully.'); loadExcelRuleTemplateList(); }
+              else { throw new Error(result.error || `HTTP error! status: ${response.status}`); }
+          } catch (error) { console.error('Error saving Excel rule template:', error); showRuleMessage(`Error saving rule template: ${error.message}`, true); }
+      }
+
+      // --- Excel Rule Template Deletion Function ---
+      async function deleteExcelRuleTemplate(filename) {
+          const baseName = filename.replace('.json', '');
+          if (!confirm(`Are you sure you want to delete the Excel rule template "${baseName}"?`)) return;
+          ruleMessageAreaEl.innerHTML = '';
+          try {
+              const url = `{{ url_for("excel_rules.delete_excel_rule_template", filename="PLACEHOLDER") }}`.replace("PLACEHOLDER", encodeURIComponent(filename));
+              const response = await fetch(url, { method: 'DELETE' });
+              const result = await response.json();
+              if (response.ok) {
+                  showRuleMessage(result.message || 'Rule template deleted successfully.');
+                  loadExcelRuleTemplateList();
+                  if (currentEditingExcelRuleTemplate === filename) { ruleTemplateNameEl.value = ''; ruleContentEl.value = ''; currentEditingExcelRuleTemplate = null; }
+              } else { throw new Error(result.error || `HTTP error! status: ${response.status}`); }
+          } catch (error) { console.error(`Error deleting Excel rule template ${filename}:`, error); showRuleMessage(`Error deleting rule template '${baseName}': ${error.message}`, true); }
+      }
+
+      // --- Reference API Fetcher Function (from template_manager.html, adapted if needed) ---
+       async function fetchReferenceApi() {
+            const url = document.getElementById('refApiUrl').value.trim(); // Assuming refApiUrl is still relevant
+            const resultEl = document.getElementById('refApiResult');
+            const errorEl = document.getElementById('refApiError');
+            resultEl.style.display = 'none'; resultEl.textContent = ''; errorEl.textContent = '';
+            if (!url) { errorEl.textContent = 'Please enter an API URL.'; return; }
+            resultEl.textContent = 'Fetching...'; resultEl.style.display = 'block';
+            try {
+                // Note: The proxy endpoint is in 'templates' blueprint.
+                // If this page needs a different proxy, it should be defined in 'excel_rule_bp'.
+                // For now, assuming it might reuse the existing one if applicable.
+                const response = await fetch('{{ url_for("templates.proxy_api_fetch") }}', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+                const result = await response.json();
+                if (response.ok && result.data) { resultEl.textContent = JSON.stringify(result.data, null, 2); }
+                else { throw new Error(result.error || `HTTP error! status: ${response.status}`); }
+            } catch (error) {
+                 console.error('Error fetching reference API:', error);
+                 resultEl.textContent = ''; resultEl.style.display = 'none';
+                 errorEl.textContent = `Error fetching API: ${error.message}`;
+                 showRuleMessage(`Failed to fetch reference API: ${error.message}`, true);
+            }
+       }
+
+
+      // --- Initial Load ---
+      document.addEventListener('DOMContentLoaded', loadExcelRuleTemplateList); // Load rule template list
+
+    </script>
+{% endblock %}
