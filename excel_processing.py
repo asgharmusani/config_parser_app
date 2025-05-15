@@ -15,16 +15,11 @@ from typing import Dict, Any, Optional, Tuple, Set, List
 # Import utility functions from utils.py
 try:
     from utils import copy_cell_style
-    # extract_skills might be used if sub-entity extraction needs further processing here,
-    # but primarily it should be handled by the rule engine.
 except ImportError:
-    logging.error("Failed to import required functions from utils.py in excel_processing.py")
-    # Define dummy functions or raise error if utils are critical
+    logging.error("Failed to import 'copy_cell_style' from utils.py in excel_processing.py")
     def copy_cell_style(s, t):
         """Dummy function if import fails."""
         pass
-    # Consider raising an error here if utils are essential:
-    # raise ImportError("Could not import utility functions. Ensure utils.py is present.")
 
 logger = logging.getLogger(__name__) # Use module-specific logger
 
@@ -42,69 +37,69 @@ def resolve_strike_through_and_prepare_intermediate(
         parsed_entities: Output from ExcelRuleEngine.
             Format: {'EntityName1': [row_data_dict1, row_data_dict2], ...}
             Each row_data_dict contains extracted fields, 'strike' status,
-            and '_source_cell_coordinate_', '_source_sheet_title_'.
-            The primary identifying value is expected to be under a key like
-            the entity name or 'primaryFieldKey' from the rule.
+            '_source_cell_coordinate_', '_source_sheet_title_', and importantly
+            '_rule_primary_field_key_' which indicates the name of the key
+            holding the primary identifying value for this entity instance.
 
     Returns:
         A dictionary where keys are entity names, and values are dictionaries
-        of items. Each item dictionary contains its resolved 'strike' status,
-        source cell info, and all other extracted fields.
-        Format: {'EntityName1': {'item_key1': {'strike': False, '_source_cell_coordinate_': 'A1', ...}, ...}}
+        of items. Each item dictionary is keyed by the item's primary identifier value,
+        and contains its resolved 'strike' status, source cell info, and all other fields.
+        Format: {'EntityName1': {'item_primary_id_value1': {'strike': False, '_source_...': ..., 'field1': ...}, ...}}
     """
     logger.info("Resolving strike-through status and preparing intermediate data...")
     intermediate_data_resolved: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-    for entity_name, entity_occurrences in parsed_entities.items():
+    for entity_name, entity_occurrences_list in parsed_entities.items():
         if entity_name not in intermediate_data_resolved:
-            intermediate_data_resolved[entity_name] = {}
-        processed_entity_items = intermediate_data_resolved[entity_name]
+            intermediate_data_resolved[entity_name] = {} # Initialize as a DICT
+        # This is the dictionary for the current entity type, e.g., intermediate_data_resolved['VQs']
+        # It will store items by their unique primary_identifier_value, with resolved strike status.
+        entity_item_map = intermediate_data_resolved[entity_name]
 
-        for occurrence_data in entity_occurrences:
-            item_key_value = None
-            # The rule engine stores the primary value under the key defined by
-            # 'primaryFieldKey' or defaults to rule['name'].
-            # We need to find this key in occurrence_data.
-            # A more robust way: rule engine should explicitly state the primary key name used for output.
-            # For now, we try common patterns or the first non-meta key.
-            primary_field_key_guess = occurrence_data.get("_rule_primary_field_key", entity_name) # Assume rule engine might add this
-            if primary_field_key_guess in occurrence_data:
-                potential_key_value = occurrence_data[primary_field_key_guess]
-            else: # Fallback
-                for k, v_val in occurrence_data.items():
-                    if not k.startswith('_') and k not in ['strike', 'expr', 'ideal', 'Expression', 'Ideal Expression', 'Concatenated Key', 'ID', 'Status', 'Item']:
-                        potential_key_value = v_val
-                        logger.debug(f"Using fallback key '{k}' with value '{v_val}' as identifier for entity '{entity_name}'.")
-                        break
-            item_key_value = str(potential_key_value) if potential_key_value is not None else None
+        for occurrence_data in entity_occurrences_list:
+            # The rule engine should have added '_rule_primary_field_key_' to occurrence_data
+            primary_field_key_for_this_entity = occurrence_data.get("_rule_primary_field_key_")
 
-            if not item_key_value:
-                logger.warning(f"Could not determine item key for occurrence in '{entity_name}': {occurrence_data}")
+            if not primary_field_key_for_this_entity:
+                logger.warning(f"Missing '_rule_primary_field_key_' in occurrence data for entity '{entity_name}'. Cannot determine primary identifier. Data: {occurrence_data}")
                 continue
 
+            item_primary_identifier_value = occurrence_data.get(primary_field_key_for_this_entity)
+
+            if item_primary_identifier_value is None: # Check for None explicitly
+                logger.warning(f"Primary identifier value is None for key '{primary_field_key_for_this_entity}' in entity '{entity_name}'. Data: {occurrence_data}")
+                continue
+            
+            item_primary_identifier_value_str = str(item_primary_identifier_value)
+
             current_strike = occurrence_data.get("strike", False)
-            # Get source cell coordinate and sheet title for style copying later
             source_sheet_title = occurrence_data.get("_source_sheet_title_")
             source_cell_coordinate = occurrence_data.get("_source_cell_coordinate_")
 
-
-            if item_key_value not in processed_entity_items:
-                processed_entity_items[item_key_value] = occurrence_data.copy()
-                processed_entity_items[item_key_value]["strike"] = current_strike
-                # Store source info for style, not the full cell object
+            if item_primary_identifier_value_str not in entity_item_map:
+                # First time seeing this item (based on its primary identifier value)
+                entity_item_map[item_primary_identifier_value_str] = occurrence_data.copy()
+                # Ensure 'strike' and source info are correctly set from this first occurrence
+                entity_item_map[item_primary_identifier_value_str]["strike"] = current_strike
                 if source_sheet_title and source_cell_coordinate:
-                    processed_entity_items[item_key_value]["_source_sheet_title_"] = source_sheet_title
-                    processed_entity_items[item_key_value]["_source_cell_coordinate_"] = source_cell_coordinate
+                    entity_item_map[item_primary_identifier_value_str]["_source_sheet_title_"] = source_sheet_title
+                    entity_item_map[item_primary_identifier_value_str]["_source_cell_coordinate_"] = source_cell_coordinate
             else:
-                existing_item = processed_entity_items[item_key_value]
-                if existing_item.get("strike", False) and not current_strike:
-                    existing_item["strike"] = False
-                    if source_sheet_title and source_cell_coordinate: # Prefer source info from non-struck cell
-                        existing_item["_source_sheet_title_"] = source_sheet_title
-                        existing_item["_source_cell_coordinate_"] = source_cell_coordinate
+                # Item already exists, check strike-through resolution
+                existing_item_details = entity_item_map[item_primary_identifier_value_str]
+                if existing_item_details.get("strike", False) and not current_strike:
+                    # Existing is struck-out, current is not -> update to not struck-out
+                    existing_item_details["strike"] = False
+                    # Prefer source info from the non-struck cell for styling
+                    if source_sheet_title and source_cell_coordinate:
+                        existing_item_details["_source_sheet_title_"] = source_sheet_title
+                        existing_item_details["_source_cell_coordinate_"] = source_cell_coordinate
+                    # Update other fields from the non-struck occurrence if they differ,
+                    # or based on a defined merge strategy (currently overwrites with non-struck).
                     for k, v_val in occurrence_data.items():
-                        if not k.startswith('_') and k != 'strike':
-                            existing_item[k] = v_val
+                        if not k.startswith('_') and k != 'strike': # Don't overwrite strike or internal meta-keys
+                            existing_item_details[k] = v_val
     logger.info("Strike-through resolution complete.")
     return intermediate_data_resolved
 
@@ -122,19 +117,16 @@ def collect_and_write_excel_outputs(
     and prepares data structures for the comparison logic.
 
     Args:
-        workbook: The openpyxl.Workbook object to modify. This workbook is expected to
-                  be the one where output sheets will be written.
+        workbook: The openpyxl.Workbook object to modify.
         parsed_entities: The output from ExcelRuleEngine.process_workbook().
-                         Format: {'EntityName1': [row_data_dict1, ...], ...}
         config: The application configuration dictionary.
         metadata_sheet_name: Name for the metadata sheet.
         sheets_to_remove_config: Base list of sheets to ensure are removed.
 
     Returns:
         A tuple containing:
-        - sheet_data_for_comparison: Dict[str, Set[str]] - Sets of non-struck primary keys
-                                     for each entity type, used by comparison_logic.
-        - intermediate_data_resolved: Dict - The fully processed and strike-resolved data.
+        - sheet_data_for_comparison: Dict[str, Set[str]]
+        - intermediate_data_resolved: Dict
     """
     logger.info("Collecting entities and writing Excel output sheets based on rule engine output.")
 
@@ -161,7 +153,7 @@ def collect_and_write_excel_outputs(
 
     # 3. Create and Populate new output sheets from intermediate_data_resolved
     logger.info("Populating dedicated output sheets based on processed entities...")
-    for entity_name, items_data in intermediate_data_resolved.items():
+    for entity_name, items_data in intermediate_data_resolved.items(): # items_data is Dict[item_key, item_details_dict]
         if not items_data:
             logger.info(f"No data found for entity '{entity_name}' after resolution, skipping output sheet creation.")
             continue
@@ -169,77 +161,75 @@ def collect_and_write_excel_outputs(
         output_sheet = workbook.create_sheet(title=entity_name)
         logger.debug(f"Created output sheet: {entity_name}")
 
-        sample_item = next(iter(items_data.values()), None)
-        if not sample_item:
+        sample_item_details = next(iter(items_data.values()), None) # Get one item's details dict
+        if not sample_item_details:
             logger.warning(f"No items to determine headers for entity '{entity_name}'. Skipping sheet population.")
             continue
 
-        headers = sorted([k for k in sample_item.keys() if not k.startswith('_')]) # Exclude internal keys
-        if "strike" in headers: headers.remove("strike") # strike is handled by HasStrikeThrough
+        # Headers for the output sheet are the keys from the item_details_dict, excluding internal ones.
+        headers = sorted([k for k in sample_item_details.keys() if not k.startswith('_')])
+        if "strike" in headers: headers.remove("strike") # strike status is special
 
-        # Ensure "HasStrikeThrough" is the last column if not already present (it shouldn't be)
+        # Ensure "HasStrikeThrough" is the last column
         if "HasStrikeThrough" not in headers:
             headers.append("HasStrikeThrough")
-        else: # Move to end if it exists
+        else: # Move to end if it somehow got in
             headers.remove("HasStrikeThrough")
             headers.append("HasStrikeThrough")
 
-
+        # Write Headers
         for col_idx, header_name in enumerate(headers, start=1):
             output_sheet.cell(row=1, column=col_idx, value=header_name).font = Font(bold=True)
 
+        # Write data rows
         current_row_num = 2
-        for item_key, item_details in sorted(items_data.items()):
+        for item_key, item_details_dict in sorted(items_data.items()): # item_key is the primary identifier value
             for col_idx, header_name in enumerate(headers, start=1):
-                cell_value_to_write = None
+                value_for_excel_cell = None
                 if header_name == "HasStrikeThrough":
-                    cell_value_to_write = str(item_details.get("strike", False))
+                    value_for_excel_cell = str(item_details_dict.get("strike", False))
                 else:
-                    raw_cell_value = item_details.get(header_name, "")
+                    raw_cell_value = item_details_dict.get(header_name, "")
 
-                    # --- MODIFICATION START: Handle list of sub-entities ---
                     if isinstance(raw_cell_value, list):
-                        # Assuming it's a list of sub-entity dicts like [{"value": "X", "strike": True}, ...]
+                        # Format list of sub-entity dicts into a comma-separated string
                         formatted_sub_entities = []
                         for sub_item in raw_cell_value:
-                            if isinstance(sub_item, dict):
+                            if isinstance(sub_item, dict) and "value" in sub_item:
                                 sub_val = sub_item.get("value", "")
-                                sub_strike = sub_item.get("strike", False)
-                                formatted_sub_entities.append(f"{sub_val}{'(S)' if sub_strike else ''}")
+                                sub_strike_status = sub_item.get("strike", False)
+                                formatted_sub_entities.append(f"{sub_val}{'(S)' if sub_strike_status else ''}")
                             else:
-                                formatted_sub_entities.append(str(sub_item)) # Fallback for unexpected list items
-                        cell_value_to_write = ", ".join(formatted_sub_entities)
-                        logger.debug(f"Formatted sub-entity list for header '{header_name}': {cell_value_to_write}")
+                                formatted_sub_entities.append(str(sub_item))
+                        value_for_excel_cell = ", ".join(formatted_sub_entities)
                     else:
-                        cell_value_to_write = raw_cell_value
-                    # --- MODIFICATION END ---
+                        value_for_excel_cell = raw_cell_value
+                
+                cell_to_write = output_sheet.cell(row=current_row_num, column=col_idx, value=value_for_excel_cell)
 
-                cell_to_write = output_sheet.cell(row=current_row_num, column=col_idx, value=cell_value_to_write)
-
-                # Apply style from the representative cell
-                # The primary identifying field's cell will get the style.
-                # The key of this field in item_details should be the one that matches item_key.
-                # This relies on resolve_strike_through_and_prepare_intermediate ensuring item_key is a value from one of the fields.
-                # A more robust way is if item_details stored which of its keys was the primary one.
-                # For now, if a header matches the item_key (which is the primary identifier value), style that cell.
-                if header_name == item_key:
-                    source_sheet_title = item_details.get("_source_sheet_title_")
-                    source_cell_coord = item_details.get("_source_cell_coordinate_")
+                # Apply style from the original source cell to the cell containing the primary identifier value
+                # The primary identifier value is item_key. We need to find which header corresponds to it.
+                # The rule engine stored the name of this primary key in '_rule_primary_field_key_'.
+                rule_primary_field_key = item_details_dict.get("_rule_primary_field_key_")
+                if rule_primary_field_key and header_name == rule_primary_field_key:
+                    source_sheet_title = item_details_dict.get("_source_sheet_title_")
+                    source_cell_coord = item_details_dict.get("_source_cell_coordinate_")
                     if source_sheet_title and source_cell_coord and source_sheet_title in workbook.sheetnames:
-                        # We need the original workbook here if it wasn't modified in place by rule engine
-                        # For now, assuming 'workbook' arg is the one containing original styles
-                        # This might be problematic if rule engine modified the workbook it received.
-                        # Best if rule engine passes the original cell object or its style components.
-                        # For now, we assume the coordinate is enough to get the cell from the *current* workbook state.
                         try:
-                            original_cell_for_style = workbook[source_sheet_title][source_cell_coord]
-                            copy_cell_style(original_cell_for_style, cell_to_write)
-                        except KeyError:
-                            logger.warning(f"Could not find source sheet '{source_sheet_title}' for styling cell {source_cell_coord}")
+                            # This assumes 'workbook' is the original one for style, or styles were preserved
+                            # If 'workbook' is a new one, this won't copy original styles.
+                            # The 'excel_rule_engine' should pass the openpyxl cell object if styles are needed.
+                            # For now, we assume it was passed via '_style_cell_object_' if that was the design.
+                            # The current design stores coordinates.
+                            # To copy style, we'd need to load the *original* workbook here, which is complex.
+                            # Let's assume for now that style copying is best-effort or might be simplified.
+                            # If '_style_cell_object_' was passed by rule engine and resolved:
+                            style_cell_obj_from_resolved = item_details_dict.get("_style_cell_object_")
+                            if style_cell_obj_from_resolved:
+                                copy_cell_style(style_cell_obj_from_resolved, cell_to_write)
+                            # else: Cannot copy style if original cell object not available here.
                         except Exception as e_style:
-                            logger.warning(f"Error applying style from {source_sheet_title}!{source_cell_coord}: {e_style}")
-
-
+                            logger.warning(f"Could not apply style for {entity_name} item {item_key}, header {header_name}: {e_style}")
             current_row_num += 1
         logging.debug(f"Populated '{entity_name}' output sheet with {current_row_num - 2} items.")
     logging.info("Finished populating output sheets.")

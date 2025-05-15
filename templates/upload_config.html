@@ -75,8 +75,11 @@
     </style>
 {% endblock %}
 
+{# Navigation block is inherited from base.html, so no override needed here #}
+
+
 {% block messages %}
-    {# Override the default message block to place messages specifically for this page #}
+    {# Area for displaying flash messages or other status messages specific to this page #}
     <div id="uploadConfigMessageArea" class="mb-4">
         {# Include the partial template for rendering flash messages #}
         {% include '_messages.html' %}
@@ -93,8 +96,8 @@
         <div>
             <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">1. Process New File</h2>
             {# Form for uploading the original source Excel file #}
+            {# Action is handled by JavaScript to call the correct API endpoint #}
             <form id="uploadForm" method="post" enctype="multipart/form-data">
-                {# Action will be set by JavaScript #}
                 <div class="mb-4">
                     <label for="sourceExcelFile" class="block text-sm font-medium text-gray-700 mb-1">Select Source Excel File (.xlsx):</label>
                     <input type="file" id="sourceExcelFile" name="sourceExcelFile" required accept=".xlsx"
@@ -142,6 +145,7 @@
             <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">2. Load Existing Processed File</h2>
             <p class="text-sm text-gray-600 mb-3">Select a previously processed file from the 'uploads' directory to view its results.</p>
             <div id="processedFilesList">
+                {# The 'processed_files' list is passed from the Flask route #}
                 {% if processed_files %}
                     <ul class="list-none max-h-60 overflow-y-auto border rounded-md p-2 bg-gray-50">
                         {% for filename in processed_files %}
@@ -172,53 +176,47 @@
             Current settings loaded from <code>config.ini</code>. Modify values below and click "Save Configuration" to update the file.
             <br><strong class="text-red-600">Note:</strong> Saving changes here updates <code>config.ini</code>. The application may need to be restarted for all changes (like logging level) to take full effect.
         </p>
-        {# Form submits updated config to the backend #}
+        {# Form submits updated config to the backend processing.update_config route #}
         <form action="{{ url_for('processing.update_config') }}" method="post">
             {# --- API Section --- #}
             <div class="config-section">
-                <h3 class="text-lg font-medium text-gray-700">API Endpoints</h3>
+                <h3 class="text-lg font-medium text-gray-700">API Settings</h3>
+                 {# dn_url and agent_group_url are removed as they are per Excel rule now #}
                  <div class="config-item">
-                    <label for="config_dn_url">DN (VQ) URL:</label>
-                    <input type="text" id="config_dn_url" name="dn_url" value="{{ config.get('dn_url', '') }}">
-                 </div>
-                 <div class="config-item">
-                    <label for="config_agent_group_url">Agent Group (Skill/VAG/Expr) URL:</label>
-                    <input type="text" id="config_agent_group_url" name="agent_group_url" value="{{ config.get('agent_group_url', '') }}">
-                 </div>
-                 <div class="config-item">
-                    <label for="config_api_timeout">API Timeout (seconds):</label>
+                    <label for="config_api_timeout">Global API Timeout (seconds):</label>
                     <input type="number" id="config_api_timeout" name="timeout" value="{{ config.get('api_timeout', 15) }}" min="1">
+                    <p class="help">Default timeout for all API calls, including those specified in Excel rule templates.</p>
                  </div>
             </div>
 
-             {# --- Sheet Layout Section --- #}
+             {# --- Sheet Layout Section (Hints for excel_processing.py) --- #}
             <div class="config-section">
-                 <h3 class="text-lg font-medium text-gray-700">Sheet Layout (for Processing)</h3>
+                 <h3 class="text-lg font-medium text-gray-700">Sheet Layout Hints (for Excel Processing)</h3>
+                 <p class="text-xs text-gray-500 mb-2">These settings are primarily used by the underlying `excel_processing.py` if not overridden by specific Excel Rule Template logic. The rule templates offer more granular control.</p>
                  <div class="config-item">
-                    <label for="config_ideal_agent_header">Ideal Agent Header Text:</label>
-                    <input type="text" id="config_ideal_agent_header" name="ideal_agent_header_text" value="{{ config.get('ideal_agent_header_text', '') }}">
-                    <p class="help">Text to look for in Row 1 (Cols C/D) to find the Ideal Agent column during processing.</p>
+                    <label for="config_ideal_agent_header">"Ideal Agent" Column Header Text:</label>
+                    <input type="text" id="config_ideal_agent_header" name="ideal_agent_header_text" value="{{ config.get('ideal_agent_header_text', 'Ideal Agent') }}">
+                    <p class="help">Text to look for in Row 1 (typically Cols C/D) to find an "Ideal Agent" type column if an Excel rule uses it.</p>
                  </div>
                  <div class="config-item">
-                    <label for="config_ideal_agent_fallback">Ideal Agent Fallback Cell:</label>
-                    <input type="text" id="config_ideal_agent_fallback" name="ideal_agent_fallback_cell" value="{{ config.get('ideal_agent_fallback_cell', '') }}">
-                     <p class="help">Cell coordinate (e.g., C2) to check if header text not found.</p>
+                    <label for="config_ideal_agent_fallback">"Ideal Agent" Fallback Cell:</label>
+                    <input type="text" id="config_ideal_agent_fallback" name="ideal_agent_fallback_cell" value="{{ config.get('ideal_agent_fallback_cell', 'C2') }}">
+                     <p class="help">Cell coordinate (e.g., C2) to check if the header text is not found in the usual header row.</p>
                  </div>
                  <div class="config-item">
-                    <label for="config_vag_sheet">VAG Extraction Sheet Name:</label>
-                    <input type="text" id="config_vag_sheet" name="vag_extraction_sheet" value="{{ config.get('vag_extraction_sheet', '') }}">
-                     <p class="help">Exact name of the sheet to extract VAGs from during processing.</p>
+                    <label for="config_vag_sheet">Default VAG Extraction Sheet Name:</label>
+                    <input type="text" id="config_vag_sheet" name="vag_extraction_sheet" value="{{ config.get('vag_extraction_sheet', 'Default Targeting- Group') }}">
+                     <p class="help">Default sheet name to look for VAGs if an Excel rule for VAGs doesn't specify sheets.</p>
                  </div>
             </div>
 
-            {# --- MODIFICATION START: Logging Configuration Section --- #}
+            {# --- Logging Configuration Section --- #}
             <div class="config-section">
                 <h3 class="text-lg font-medium text-gray-700">Logging</h3>
                 <div class="config-item">
                     <label for="config_log_level">Application Log Level:</label>
-                    <select id="config_log_level" name="log_level">
-                        {# Options: DEBUG, INFO, WARNING, ERROR, CRITICAL #}
-                        {# The 'config' dictionary passed to the template should contain 'log_level_str' #}
+                    {# The 'config' dictionary passed to the template should contain 'log_level_str' #}
+                    <select id="config_log_level" name="log_level" class="w-full border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
                         <option value="DEBUG" {% if config.get('log_level_str') == 'DEBUG' %}selected{% endif %}>DEBUG</option>
                         <option value="INFO" {% if config.get('log_level_str') == 'INFO' or not config.get('log_level_str') %}selected{% endif %}>INFO (Default)</option>
                         <option value="WARNING" {% if config.get('log_level_str') == 'WARNING' %}selected{% endif %}>WARNING</option>
@@ -228,9 +226,9 @@
                     <p class="help">Set the application-wide logging level. DEBUG is most verbose. Changes require an application restart to take full effect.</p>
                 </div>
             </div>
-            {# --- MODIFICATION END --- #}
 
             {# Files Section (source_file removed) #}
+            {# This section is no longer needed for source_file #}
             {# <div class="config-section">
                 <h3 class="text-lg font-medium text-gray-700">Files</h3>
             </div> #}
@@ -250,7 +248,7 @@
 
 
 {% block action_bar %}
-    {# No action bar needed on this specific page #}
+    {# No action bar needed on this specific page, override base block to be empty #}
 {% endblock %}
 
 
@@ -265,7 +263,7 @@
         const uploadSuccessMessage = document.getElementById('uploadSuccessMessage');
         const runComparisonButton = document.getElementById('runComparisonButton');
         const loadProcessedStatus = document.getElementById('loadProcessedStatus');
-        const generalMessageArea = document.getElementById('uploadConfigMessageArea'); // Use specific message area
+        const generalMessageArea = document.getElementById('uploadConfigMessageArea'); // Use specific message area for this page
         const excelRuleSelect = document.getElementById('excelRuleSelect');
 
         // --- Handle File Upload ---
@@ -341,9 +339,12 @@
         }
 
         // Enable/disable Run button based on rule selection
-        excelRuleSelect.addEventListener('change', () => {
-            runComparisonButton.disabled = excelRuleSelect.value === "";
-        });
+        if(excelRuleSelect){ // Check if element exists before adding listener
+            excelRuleSelect.addEventListener('change', () => {
+                runComparisonButton.disabled = excelRuleSelect.value === "";
+            });
+        }
+
 
         // --- Trigger Comparison Run ---
         async function runComparison() {
@@ -411,10 +412,9 @@
 
         // Initial load for excel rule template dropdown if the processing trigger area is visible
         // (e.g., after a page reload where a file was previously uploaded but not processed)
-        // This might be better handled by server-side logic or session state.
-        // For now, it's loaded after a successful upload.
+        // This is now handled after successful upload.
         // document.addEventListener('DOMContentLoaded', () => {
-        //     if (processingTriggerArea.style.display === 'block') {
+        //     if (processingTriggerArea && processingTriggerArea.style.display === 'block') {
         //         loadExcelRuleTemplatesForDropdown();
         //     }
         // });

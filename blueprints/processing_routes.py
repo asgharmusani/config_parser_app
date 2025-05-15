@@ -4,7 +4,7 @@ Flask Blueprint for handling backend processing tasks and API endpoints.
 
 Includes API endpoints for:
 - Uploading the original source Excel file.
-- Triggering the comparison process on an uploaded file.
+- Triggering the comparison process on an uploaded file (using rule-defined API URLs for comparison).
 - Loading data from an existing processed file.
 - Simulating configuration template application.
 - Confirming and finalizing (simulated) updates.
@@ -28,8 +28,10 @@ from typing import Dict, Any, Optional, Tuple, Set, List
 try:
     # Assuming utils.py is in the parent directory or accessible via Python path
     from utils import IdGenerator, replace_placeholders, read_comparison_data
-    # TEMPLATE_DIR is for DB update templates, not Excel rule templates here
+    # TEMPLATE_DIR is for DB update templates
     TEMPLATE_DIR = './config_templates/'
+    # EXCEL_RULE_TEMPLATE_DIR for Excel processing rules
+    EXCEL_RULE_TEMPLATE_DIR = './excel_rule_templates/'
 except ImportError as e:
     logging.error(f"Failed to import required functions/constants for processing_routes: {e}")
     # Define dummy functions or raise error if critical
@@ -40,29 +42,32 @@ except ImportError as e:
     def replace_placeholders(template_data, row_data, current_row_next_id=None): return template_data
     def read_comparison_data(filename: str) -> bool: return False # Dummy returns false
     TEMPLATE_DIR = './config_templates/'
+    EXCEL_RULE_TEMPLATE_DIR = './excel_rule_templates/'
+
 
 # Import functions from the refactored processing modules
-# These modules contain the core logic previously in excel_comparator.py
 try:
     from config import save_config # Function to save updated config
     from excel_processing import collect_and_write_excel_outputs
-    from api_fetching import fetch_api_data # Function to call external APIs
-    from comparison_logic import write_comparison_sheets # Function to write comparison results
+    from api_fetching import fetch_and_process_api_data_for_entity # Updated import
+    from comparison_logic import write_comparison_sheets
     # Import constants needed within this blueprint's functions
     METADATA_SHEET_NAME = "Metadata"
     MAX_DN_ID_LABEL_CELL = "A1"
     MAX_DN_ID_VALUE_CELL = "B1"
     MAX_AG_ID_LABEL_CELL = "A2"
     MAX_AG_ID_VALUE_CELL = "B2"
-    DN_SHEETS = {"Vqs Comparison"} # Used by UI to determine ID type for {func.next_id}
-    AGENT_GROUP_SHEETS = {"Skills Comparison", "Vags Comparison", "Skill_exprs Comparison"} # Used by UI
+    # Sheet type definitions for ID generation (based on comparison sheet names)
+    # These are used by IdGenerator in this module when processing rows for simulation
+    DN_SHEETS = {"Vqs Comparison"} # Example, this might need to be more dynamic based on rule's idPoolType
+    AGENT_GROUP_SHEETS = {"Skills Comparison", "Vags Comparison", "Skill_exprs Comparison"}
 
 except ImportError as e:
      logging.error(f"Failed to import core processing functions: {e}. Processing endpoints will fail.")
      # Define dummy functions to allow app to run, but log error
      def save_config(p, s): raise NotImplementedError("save_config not imported")
      def collect_and_write_excel_outputs(w, p_e, c, m, s_t_r_c): raise NotImplementedError("collect_and_write_excel_outputs not imported")
-     def fetch_api_data(c): raise NotImplementedError("fetch_api_data not imported")
+     def fetch_and_process_api_data_for_entity(u, en, r, c): return ({}, 0) # Dummy returns data and max_id
      def write_comparison_sheets(w, s, a, i): raise NotImplementedError("write_comparison_sheets not imported")
      # Redefine constants as fallbacks
      METADATA_SHEET_NAME = "Metadata"; MAX_DN_ID_LABEL_CELL = "A1"; MAX_DN_ID_VALUE_CELL = "B1"; MAX_AG_ID_LABEL_CELL = "A2"; MAX_AG_ID_VALUE_CELL = "B2"
@@ -73,14 +78,6 @@ except ImportError as e:
 LOG_FILE_UI = 'ui_viewer.log' # Assuming shared log file
 UPLOAD_FOLDER = './uploads' # Define a folder to store uploaded and processed files
 ALLOWED_EXTENSIONS = {'xlsx'}
-
-# Keys used to identify rows in different comparison sheets (must match ui_viewer.py)
-IDENTIFIER_KEYS = {
-    "Skill_exprs Comparison": "Concatenated Key",
-    "Vqs Comparison": "Item", # Assuming 'Item' is the first column header read
-    "Skills Comparison": "Item",
-    "Vags Comparison": "Item",
-}
 
 
 # --- Logging ---
@@ -97,36 +94,7 @@ def allowed_file(filename: str) -> bool:
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# --- MODIFICATION START: Define map_rule_entity_name_to_api_key ---
-def map_rule_entity_name_to_api_key(rule_entity_name: str) -> Optional[str]:
-    """
-    Maps an entity name from an Excel rule template to the corresponding key
-    used in the api_data dictionary (which comes from fetch_api_data).
-    This is a heuristic and might need to be more robust or configurable if
-    rule names and API data keys diverge significantly.
-
-    Args:
-        rule_entity_name: The 'name' field from an entity rule in the excelrule_template.json.
-
-    Returns:
-        The corresponding key for api_data (e.g., "vqs", "skills", "skill_exprs", "vags")
-        or None if no clear mapping is found.
-    """
-    name_lower = rule_entity_name.lower()
-    # Prioritize more specific matches first
-    if "skill_expression" in name_lower or "skill_expr" in name_lower: # Handles "Skill_Expressions", "Skill_exprs"
-        return "skill_exprs"
-    elif "vq" in name_lower or "dn" in name_lower: # Handles "VQs", "DNs"
-        return "vqs"
-    elif "skill" in name_lower: # Must be after skill_expression to avoid false positive
-        return "skills"
-    elif "vag" in name_lower:
-        return "vags"
-
-    logger.warning(f"Could not map rule entity name '{rule_entity_name}' to a known API data key. API data for this entity might not be used in comparison.")
-    return None # No clear mapping found
-# --- MODIFICATION END ---
-
+# map_rule_entity_name_to_api_key is no longer needed as API URLs are per rule.
 
 # --- API Routes ---
 
@@ -147,7 +115,6 @@ def upload_original_file():
         return jsonify({"error": "No selected file."}), 400
 
     if file and allowed_file(file.filename):
-        # Ensure the upload folder exists
         if not os.path.exists(UPLOAD_FOLDER):
             try:
                 os.makedirs(UPLOAD_FOLDER)
@@ -162,11 +129,10 @@ def upload_original_file():
         try:
             file.save(original_filepath)
             logger.info(f"Uploaded original file saved to: {original_filepath}")
-            # Store the path of the uploaded original file for the run-comparison step
             current_app.config['LAST_UPLOADED_ORIGINAL_FILE'] = original_filepath
             return jsonify({
                 "message": f"File '{original_filename}' uploaded successfully. Ready to process.",
-                "original_filename": original_filename # Return filename for UI display
+                "original_filename": original_filename
                 }), 200
         except Exception as e:
             logger.error(f"Error saving uploaded file: {e}", exc_info=True)
@@ -182,6 +148,8 @@ def run_comparison():
     Triggers the comparison process using the last uploaded original file
     and the selected Excel rule template.
     Generates the '*_processed.xlsx' file and loads its data into the cache.
+    API data for comparison is fetched based on 'comparisonApiUrl' in rules.
+    Max IDs for ID generation are aggregated from these specific API calls.
     """
     logger.info("Received request to run comparison process.")
     request_data = request.get_json()
@@ -204,10 +172,10 @@ def run_comparison():
     processed_filepath = os.path.join(UPLOAD_FOLDER, processed_filename)
 
     logger.info(f"Starting comparison: original='{original_filepath}', rule='{excel_rule_template_name}'")
-    app_config_settings = current_app.config.get('APP_SETTINGS', {}) # Get loaded app config
+    app_config_settings = current_app.config.get('APP_SETTINGS', {})
 
     # --- Load Excel Rule Template ---
-    rule_template_path = os.path.join("./excel_rule_templates/", excel_rule_template_name)
+    rule_template_path = os.path.join(EXCEL_RULE_TEMPLATE_DIR, excel_rule_template_name)
     if not os.path.exists(rule_template_path):
         logger.error(f"Excel rule template file not found: {rule_template_path}")
         return jsonify({"error": f"Excel rule template '{excel_rule_template_name}' not found."}), 404
@@ -221,100 +189,107 @@ def run_comparison():
 
     # --- Instantiate Rule Engine ---
     try:
-        from excel_rule_engine import ExcelRuleEngine # Import here to avoid circular dependencies at module level
+        from excel_rule_engine import ExcelRuleEngine
         rule_engine = ExcelRuleEngine(rule_template_json)
     except Exception as e:
         logger.error(f"Error initializing ExcelRuleEngine: {e}", exc_info=True)
         return jsonify({"error": f"Failed to initialize Excel rule engine: {e}"}), 500
 
     # --- Main Processing Logic ---
-    output_workbook = None # Initialize for finally block
+    output_workbook = None
     try:
-        # 1. Make a working copy (output path)
+        # 1. Make a working copy of the original file for processing
         shutil.copyfile(original_filepath, processed_filepath)
         logger.info(f"Copied original file to '{processed_filepath}' for processing.")
 
         # 2. Load the original workbook for the rule engine to read
-        # Load with data_only=True if you don't need formulas, but styles might be lost for strikethrough
-        # If rule engine needs cell objects for styles, load with read_only=False, data_only=False
         original_workbook_for_rules = openpyxl.load_workbook(original_filepath, read_only=False, data_only=False)
         parsed_entities = rule_engine.process_workbook(original_workbook_for_rules)
-        original_workbook_for_rules.close() # Close after rule engine is done
+        original_workbook_for_rules.close()
 
-        # 3. Fetch API data AND Max IDs
-        all_api_data, max_dn_id, max_ag_id = fetch_api_data(app_config_settings)
+        # --- 3. Fetch API data PER ENTITY RULE for comparison AND Aggregate Max IDs ---
+        api_data_for_comparison = {}
+        overall_max_dn_id = 0 # Initialize overall max IDs
+        overall_max_ag_id = 0
 
-        # Cache raw API data (includes all types like 'vqs', 'skills', etc.)
-        # This is used by IdGenerator in update_routes.py if it needs to find a max ID.
-        current_app.config['API_DATA_CACHE'] = all_api_data
+        if rule_template_json and "Entities" in rule_template_json:
+            for entity_rule in rule_template_json["Entities"]:
+                if not entity_rule.get("enabled", True):
+                    continue
 
-        # 4. Filter API data based on entities processed by the rule engine
-        filtered_api_data = {}
-        enabled_rule_entity_names = parsed_entities.keys() # Entities defined and enabled in the rule
+                entity_name = entity_rule["name"]
+                api_url_for_comparison = entity_rule.get("comparisonApiUrl")
+                # Get the idPoolType hint from the rule
+                id_pool_type = entity_rule.get("idPoolType") # e.g., "dn" or "agent_group"
 
-        for rule_entity_name in enabled_rule_entity_names:
-            # Map the rule's entity name (e.g., "VQs") to the key used in all_api_data (e.g., "vqs")
-            api_key_for_entity = map_rule_entity_name_to_api_key(rule_entity_name)
-            if api_key_for_entity and api_key_for_entity in all_api_data:
-                # If a mapping exists and data for that API key was fetched, include it
-                filtered_api_data[rule_entity_name] = all_api_data[api_key_for_entity]
-                logger.debug(f"Including API data for rule entity '{rule_entity_name}' (using API key '{api_key_for_entity}')")
-            elif api_key_for_entity:
-                # Mapping exists, but no data for this key was fetched from API
-                logger.warning(f"API key '{api_key_for_entity}' (for rule '{rule_entity_name}') not found in fetched API data. API data keys available: {list(all_api_data.keys())}")
-                filtered_api_data[rule_entity_name] = {} # Ensure key exists for comparison logic
-            else:
-                 # No mapping found for this rule entity name
-                 logger.warning(f"No API data mapping defined for rule entity '{rule_entity_name}'. This entity will only show as 'New in Sheet' if found by rules.")
-                 filtered_api_data[rule_entity_name] = {} # Ensure key exists
+                if api_url_for_comparison:
+                    logger.info(f"Fetching API data for comparison for entity '{entity_name}' using URL: {api_url_for_comparison}")
+                    # fetch_and_process_api_data_for_entity now returns (processed_data, max_id_from_this_api_call)
+                    processed_data, max_id_this_api = fetch_and_process_api_data_for_entity(
+                        api_url_for_comparison,
+                        entity_name,
+                        entity_rule, # Pass the whole rule for hints like 'apiProcessingHints'
+                        app_config_settings # Pass global app config for timeout
+                    )
+                    api_data_for_comparison[entity_name] = processed_data
 
-        if not any(filtered_api_data.values()) and any(all_api_data.values()): # Check if any data remains after filtering
-            logging.warning("API data was fetched, but none of it matched the entities defined and enabled in the Excel rule template.")
+                    # --- MODIFICATION START: Aggregate Max IDs based on idPoolType ---
+                    if id_pool_type == 'dn':
+                        overall_max_dn_id = max(overall_max_dn_id, max_id_this_api)
+                    elif id_pool_type == 'agent_group':
+                        overall_max_ag_id = max(overall_max_ag_id, max_id_this_api)
+                    elif max_id_this_api > 0: # If pool type not specified but IDs found
+                        logger.warning(f"Max ID {max_id_this_api} found for entity '{entity_name}' from API '{api_url_for_comparison}', "
+                                       f"but 'idPoolType' was not specified or recognized in the rule. This ID will not contribute to IdGenerator pools.")
+                    # --- MODIFICATION END ---
+                else:
+                    # If no comparisonApiUrl, this entity won't be compared against an API
+                    api_data_for_comparison[entity_name] = {}
+                    logger.info(f"No 'comparisonApiUrl' defined for entity '{entity_name}'. It will not be compared against API data.")
+        logger.info(f"Aggregated Max IDs after all rule-specific API calls: DN Max ID={overall_max_dn_id}, AG Max ID={overall_max_ag_id}")
+        # --- End API Fetching ---
 
-
-        # 5. Load the workbook that will be modified (the copy for output)
+        # 4. Load the workbook that will be modified (the copy for output)
         output_workbook = openpyxl.load_workbook(processed_filepath, read_only=False, data_only=False)
 
-        # 6. Collect and Write Excel Outputs (Output sheets based on rules)
-        sheets_to_remove_base = [METADATA_SHEET_NAME] # Base sheets to always try to remove
+        # 5. Collect and Write Excel Outputs (Output sheets based on rules)
+        sheets_to_remove_base = [METADATA_SHEET_NAME]
         sheet_data_for_comparison, intermediate_data_resolved = collect_and_write_excel_outputs(
             output_workbook, parsed_entities, app_config_settings, METADATA_SHEET_NAME, sheets_to_remove_base
         )
 
-        # 7. Write Comparison Sheets
-        # Pass the filtered_api_data to write_comparison_sheets
+        # 6. Write Comparison Sheets
+        # Pass the api_data_for_comparison (now keyed by rule entity names)
         write_comparison_sheets(
-            output_workbook, sheet_data_for_comparison, filtered_api_data, intermediate_data_resolved
+            output_workbook, sheet_data_for_comparison, api_data_for_comparison, intermediate_data_resolved
         )
 
-        # 8. Write Metadata sheet
+        # 7. Write Metadata sheet with aggregated Max IDs
         if METADATA_SHEET_NAME in output_workbook.sheetnames:
             metadata_sheet = output_workbook[METADATA_SHEET_NAME]
         else:
             metadata_sheet = output_workbook.create_sheet(title=METADATA_SHEET_NAME)
         metadata_sheet[MAX_DN_ID_LABEL_CELL] = "Max DN API ID Found"
         metadata_sheet[MAX_DN_ID_LABEL_CELL].font = Font(bold=True)
-        metadata_sheet[MAX_DN_ID_VALUE_CELL] = max_dn_id
+        metadata_sheet[MAX_DN_ID_VALUE_CELL] = overall_max_dn_id # Use aggregated max
         metadata_sheet[MAX_AG_ID_LABEL_CELL] = "Max AgentGroup API ID Found"
         metadata_sheet[MAX_AG_ID_LABEL_CELL].font = Font(bold=True)
-        metadata_sheet[MAX_AG_ID_VALUE_CELL] = max_ag_id
-        logging.info(f"Wrote Max IDs (DN:{max_dn_id}, AG:{max_ag_id}) to '{METADATA_SHEET_NAME}'.")
+        metadata_sheet[MAX_AG_ID_VALUE_CELL] = overall_max_ag_id # Use aggregated max
+        logging.info(f"Wrote Aggregated Max IDs (DN:{overall_max_dn_id}, AG:{overall_max_ag_id}) to '{METADATA_SHEET_NAME}'.")
 
-        # 9. Save the processed workbook
+        # 8. Save the processed workbook
         output_workbook.save(processed_filepath)
         logger.info(f"Successfully saved processed workbook to: {processed_filepath}")
 
-        # --- 10. Update App Cache from the *newly generated* processed file ---
+        # --- 9. Update App Cache from the *newly generated* processed file ---
         logger.info("Reloading application data cache from processed file...")
-        # Clear previous cache first
         current_app.config['EXCEL_DATA'] = {}
         current_app.config['EXCEL_FILENAME'] = None
         current_app.config['COMPARISON_SHEETS'] = []
         current_app.config['SHEET_HEADERS'] = {}
-        current_app.config['MAX_DN_ID'] = 0
-        current_app.config['MAX_AG_ID'] = 0
+        current_app.config['MAX_DN_ID'] = 0 # Will be updated by read_comparison_data
+        current_app.config['MAX_AG_ID'] = 0 # Will be updated by read_comparison_data
 
-        # Call the utility function to read the processed file into the cache
         if read_comparison_data(processed_filepath): # This function is now in utils.py
              logger.info("Application cache updated successfully.")
              first_sheet = current_app.config.get('COMPARISON_SHEETS', [None])[0]
@@ -331,7 +306,7 @@ def run_comparison():
         logger.error(f"Error during file processing with rule '{excel_rule_template_name}': {proc_err}", exc_info=True)
         return jsonify({"error": f"Error processing file '{original_filename}' with rule '{excel_rule_template_name}': {proc_err}"}), 500
     finally:
-        if output_workbook: # This refers to the output_workbook
+        if output_workbook:
             try:
                 output_workbook.close()
                 logger.debug("Output workbook closed.")
@@ -392,32 +367,31 @@ def update_config():
     """
     API endpoint to receive updated configuration data from the UI
     and save it back to the config.ini file. Handles new 'log_level'.
+    API URLs (dn_url, agent_group_url) are no longer part of global config.
     """
     logger.info("Received request to update configuration.")
     try:
         settings_to_save = {
-            'dn_url': request.form.get('dn_url'),
-            'agent_group_url': request.form.get('agent_group_url'),
+            # 'dn_url' and 'agent_group_url' are removed from global config
             'api_timeout': request.form.get('timeout', type=int, default=15),
             'ideal_agent_header_text': request.form.get('ideal_agent_header_text'),
             'ideal_agent_fallback_cell': request.form.get('ideal_agent_fallback_cell'),
             'vag_extraction_sheet': request.form.get('vag_extraction_sheet'),
             'log_level_str': request.form.get('log_level') # Get the log level string
         }
-        # Ensure essential keys have fallbacks if not submitted
+        # Ensure essential keys have fallbacks
         if 'api_timeout' not in settings_to_save or settings_to_save['api_timeout'] is None:
             settings_to_save['api_timeout'] = 15
         if 'log_level_str' not in settings_to_save or settings_to_save['log_level_str'] is None:
             settings_to_save['log_level_str'] = 'INFO'
+
 
         config_path = current_app.config.get('CONFIG_FILE_PATH', 'config.ini')
         save_config(config_path, settings_to_save)
 
         # Update the config cache in the running app
         current_app.config['APP_SETTINGS'].update(settings_to_save)
-        # If log level changed, reconfigure logger (requires app restart for full effect on all modules)
-        # For simplicity, we'll assume restart for now.
-        logger.info("Configuration saved. App cache updated. Restart may be needed for log level change.")
+        logger.info("Configuration saved and application cache updated.")
         flash('Configuration saved successfully to config.ini. Restart may be needed for some changes.', 'success')
 
     except (IOError, ValueError, Exception) as e:
@@ -471,8 +445,11 @@ def simulate_configuration():
         for sheet_name, sheet_data in all_excel_data.items():
             headers = sheet_headers_map.get(sheet_name)
             if not headers: continue
-            id_key = headers[0]
-            entity_type = 'dn' if sheet_name in DN_SHEETS else ('agent_group' if sheet_name in AGENT_GROUP_SHEETS else None)
+            id_key = headers[0] # Assumes first header is the primary identifier for selection
+            # Determine entity type based on the sheet name (which is now the rule entity name)
+            # This mapping is heuristic for IdGenerator. A more robust way is to pass entity_name from rule.
+            entity_type = 'dn' if "vq" in sheet_name.lower() else ('agent_group' if any(s_type in sheet_name.lower() for s_type in ["skill", "vag", "expr"]) else None)
+
             for row in sheet_data:
                 row_identifier = row.get(id_key)
                 if row_identifier in selected_row_identifiers and row_identifier not in processed_identifiers:

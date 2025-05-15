@@ -44,6 +44,7 @@ def upload_config_page():
     """
     logger.info("Rendering Upload/Configuration page.")
     # Fetch current application configuration settings to display in the form
+    # Assumes config is loaded into current_app.config['APP_SETTINGS'] by app.py
     app_config = current_app.config.get('APP_SETTINGS', {})
 
     # List previously processed files for the user to select from
@@ -69,6 +70,7 @@ def upload_config_page():
         logger.warning(f"Upload folder '{UPLOAD_FOLDER}' does not exist. Cannot list processed files.")
 
     # Pass necessary context for base.html's navigation, even if no data is loaded
+    # These are needed because upload_config.html extends base.html which uses these for nav
     available_sheets_for_nav = current_app.config.get('COMPARISON_SHEETS', [])
 
     # Pass config, file list, and navigation context to the template
@@ -79,10 +81,12 @@ def upload_config_page():
         # Context for base.html's navigation
         available_sheets=available_sheets_for_nav,
         comparison_suffix_for_template=COMPARISON_SUFFIX, # Pass the constant
-        current_comparison_type=None, # No specific comparison type active here
+        # Provide defaults for other nav-related vars that might be expected by base.html
+        current_comparison_type=None,
         sort_by=None,
         sort_order=None,
-        page_size_str=str(DEFAULT_PAGE_SIZE)
+        page_size_str=str(DEFAULT_PAGE_SIZE),
+        filename=current_app.config.get('EXCEL_FILENAME') # Pass filename if available
     )
 
 
@@ -104,14 +108,14 @@ def view_comparison(comparison_type: str):
     all_data = current_app.config.get('EXCEL_DATA', {})
     available_sheets = current_app.config.get('COMPARISON_SHEETS', [])
     sheet_headers_map = current_app.config.get('SHEET_HEADERS', {})
-    error = None
+    error = None # Initialize error variable for this request
 
-    # Check if data is loaded; redirect if not
+    # Check if data is loaded; if not, redirect to the upload page with a message
     if not filename or not all_data or not available_sheets or not sheet_headers_map:
         error_msg = "No comparison data loaded. Please upload/process or load a file first."
         logger.warning(error_msg)
-        flash(error_msg, 'warning')
-        return redirect(url_for('ui.upload_config_page'))
+        flash(error_msg, 'warning') # Use Flask flash messaging
+        return redirect(url_for('ui.upload_config_page')) # Redirect to upload page
 
     # Validate requested comparison type
     if comparison_type not in all_data or comparison_type not in sheet_headers_map:
@@ -122,6 +126,7 @@ def view_comparison(comparison_type: str):
         else:
              return redirect(url_for('ui.upload_config_page'))
 
+    # Store last viewed page in session for the 'Back' link on template manager
     session['last_viewed_comparison'] = comparison_type
     logger.debug(f"Stored last viewed comparison in session: {comparison_type}")
 
@@ -135,58 +140,126 @@ def view_comparison(comparison_type: str):
     try:
         page = request.args.get('page', 1, type=int)
         page_size_str = request.args.get('size', str(DEFAULT_PAGE_SIZE), type=str).lower()
-        default_sort_col = current_headers[0]
+        default_sort_col = current_headers[0] # Default sort by first header
         sort_by = request.args.get('sort_by', default_sort_col, type=str)
         sort_order = request.args.get('order', 'asc', type=str).lower()
-    except (ValueError, IndexError):
+    except (ValueError, IndexError): # Catch potential errors if headers are empty or params invalid
+        # Fallback to defaults if query parameters are invalid type or headers missing
         logging.warning("Invalid query parameter type or missing headers during param parsing, using defaults.")
-        page = 1; page_size_str = str(DEFAULT_PAGE_SIZE); default_sort_col = current_headers[0] if current_headers else None; sort_by = default_sort_col; sort_order = 'asc'
+        page = 1
+        page_size_str = str(DEFAULT_PAGE_SIZE)
+        default_sort_col = current_headers[0] if current_headers else None
+        sort_by = default_sort_col
+        sort_order = 'asc'
+
 
     # --- Validate and process parameters ---
-    if page < 1: page = 1
-    if sort_order not in ['asc', 'desc']: sort_order = 'asc'
-    valid_sort_columns = current_headers
-    if sort_by not in valid_sort_columns: sort_by = default_sort_col if default_sort_col else (current_headers[0] if current_headers else None)
+    if page < 1:
+        page = 1 # Ensure page is at least 1
+    if sort_order not in ['asc', 'desc']:
+        sort_order = 'asc' # Default to ascending
 
+    # Use the actual headers read from the sheet as valid sort columns
+    valid_sort_columns = current_headers
+    # If requested sort_by is invalid, revert to default (first header)
+    if sort_by not in valid_sort_columns:
+        sort_by = default_sort_col if default_sort_col else (current_headers[0] if current_headers else None)
+
+    # Determine numeric page size
     show_all = (page_size_str == 'all')
-    page_size = DEFAULT_PAGE_SIZE
+    page_size = DEFAULT_PAGE_SIZE # Default numeric size
     if not show_all:
         try:
             requested_size = int(page_size_str)
-            if requested_size in PAGE_SIZE_OPTIONS: page_size = requested_size
-        except ValueError: page_size_str = str(DEFAULT_PAGE_SIZE)
+            # Use requested size only if it's one of the predefined valid options
+            if requested_size in PAGE_SIZE_OPTIONS:
+                 page_size = requested_size
+            # else: keep the default numeric page_size
+        except ValueError:
+            # If conversion fails (e.g., size=abc), reset string and use default numeric
+            page_size_str = str(DEFAULT_PAGE_SIZE)
+            # page_size already holds DEFAULT_PAGE_SIZE
 
     # --- Get Data and Sort ---
     current_sheet_data = all_data.get(comparison_type, [])
     total_items = len(current_sheet_data)
-    sorted_data = current_sheet_data
+    sorted_data = current_sheet_data # Default to unsorted if sorting fails or not applicable
 
-    if total_items > 0 and sort_by:
+    if total_items > 0 and sort_by: # Only sort if there's data and a valid column to sort by
         reverse_sort = (sort_order == 'desc')
+
+        # Sort key function (handles None, tries numeric for ID, defaults to string)
         def sort_key(item_row_dict: Dict[str, Any]) -> Tuple:
-            value = item_row_dict.get(sort_by)
-            if value is None: return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
+            """Generate a sort key for Python's sort, handling None and basic types."""
+            value = item_row_dict.get(sort_by) # Get the value for the column we're sorting by
+
+            if value is None:
+                # Place None values consistently (e.g., at the end when ascending)
+                return (1, float('inf')) if sort_order == 'asc' else (0, float('-inf'))
             try:
+                # Try numeric sort for 'ID' column (or similar) if possible
+                # Check header name case-insensitively for flexibility
                 if sort_by.upper() == 'ID' or sort_by.upper() == 'ID (FROM API)':
-                    try: return (0, float(value))
-                    except (ValueError, TypeError): return (1, str(value).lower())
+                    try:
+                        # Group numbers first
+                        return (0, float(value))
+                    except (ValueError, TypeError):
+                         # Treat non-numeric IDs as strings, group after numbers
+                        return (1, str(value).lower())
+                # Default: Case-insensitive string sort
                 return (0, str(value).lower())
-            except Exception as e: logging.warning(f"Could not process value '{value}' for sorting by '{sort_by}': {e}"); return (2, str(value).lower())
+            except Exception as e:
+                # Fallback for any unexpected error during value processing
+                logging.warning(f"Could not process value '{value}' for sorting by '{sort_by}': {e}")
+                 # Group these problematic values last
+                return (2, str(value).lower())
+
+        # Perform the sort
         try:
             sorted_data = sorted(current_sheet_data, key=sort_key, reverse=reverse_sort)
         except Exception as sort_e:
+            # Handle potential errors during sorting (e.g., complex type issues)
             logging.error(f"Error during sorting data for '{comparison_type}': {sort_e}", exc_info=True)
-            error = f"Error sorting data by {sort_by}. Displaying unsorted."
-            sorted_data = current_sheet_data
+            error = f"Error sorting data by {sort_by}. Displaying unsorted." # Inform user via error var
+            # sorted_data remains the original current_sheet_data (unsorted)
 
     # --- Pagination ---
-    page_data = []; total_pages = 0; start_index = 0; end_index = 0
-    if show_all:
-        page = 1; total_pages = 1 if total_items > 0 else 0; start_index = 0; end_index = total_items; page_data = sorted_data
-    elif total_items > 0:
-        total_pages = math.ceil(total_items / page_size); page = max(1, min(page, total_pages)); start_index = (page - 1) * page_size; end_index = start_index + page_size; page_data = sorted_data[start_index:end_index]
+    page_data = []
+    total_pages = 0
+    start_index = 0
+    end_index = 0
 
-    pagination_info = { 'page': page, 'total_pages': total_pages, 'total_items': total_items, 'has_prev': page > 1 and not show_all, 'prev_num': page - 1, 'has_next': page < total_pages and not show_all, 'next_num': page + 1, 'start_item': min(start_index + 1, total_items) if total_items > 0 else 0, 'end_item': min(end_index, total_items) }
+    if show_all:
+        # If showing all, set page to 1, one total page, and use all sorted data
+        page = 1
+        total_pages = 1 if total_items > 0 else 0
+        start_index = 0
+        end_index = total_items
+        page_data = sorted_data
+    elif total_items > 0:
+        # Calculate total pages needed based on numeric page_size
+        total_pages = math.ceil(total_items / page_size)
+        # Adjust current page if it exceeds total pages (or is less than 1)
+        page = max(1, min(page, total_pages))
+        # Calculate start and end index for slicing
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        # Get the slice of data for the current page
+        page_data = sorted_data[start_index:end_index]
+    # else: variables remain 0 / empty list if total_items is 0
+
+    # Create pagination info dictionary for the template
+    pagination_info = {
+        'page': page,
+        'total_pages': total_pages,
+        'total_items': total_items,
+        'has_prev': page > 1 and not show_all,
+        'prev_num': page - 1,
+        'has_next': page < total_pages and not show_all,
+        'next_num': page + 1,
+        'start_item': min(start_index + 1, total_items) if total_items > 0 else 0,
+        'end_item': min(end_index, total_items)
+    }
     logging.debug(f"Pagination for '{comparison_type}': Page {page}/{total_pages}, Size='{page_size_str}', Items {pagination_info['start_item']}-{pagination_info['end_item']} of {total_items}")
 
     # --- Render Template ---
@@ -196,14 +269,14 @@ def view_comparison(comparison_type: str):
         page_data=page_data,
         pagination=pagination_info,
         filename=filename,
-        available_sheets=available_sheets,
+        available_sheets=available_sheets, # For nav links in base.html
         current_comparison_type=comparison_type,
         current_headers=current_headers,
         sort_by=sort_by,
         sort_order=sort_order,
         page_size_str=page_size_str,
         page_size_options=PAGE_SIZE_OPTIONS,
-        comparison_suffix_for_template=COMPARISON_SUFFIX, # Pass the constant
+        comparison_suffix_for_template=COMPARISON_SUFFIX, # For nav links in base.html
         skill_expr_sheet_name=SKILL_EXPR_SHEET_NAME,
         error=error
     )
@@ -221,7 +294,7 @@ def refresh_data():
     current_app.config['SHEET_HEADERS'] = {}
     current_app.config['MAX_DN_ID'] = 0
     current_app.config['MAX_AG_ID'] = 0
-    session.pop('last_viewed_comparison', None)
+    session.pop('last_viewed_comparison', None) # Clear last viewed page from session
     flash("Data cache cleared. Please upload an Excel file.", "info")
     return redirect(url_for('ui.upload_config_page'))
 

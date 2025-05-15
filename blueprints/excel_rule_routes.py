@@ -13,12 +13,14 @@ This blueprint handles routes related to:
 import os
 import json
 import logging
-from flask import Blueprint, request, jsonify, render_template, abort, current_app, session, url_for
+from flask import (
+    Blueprint, request, jsonify, render_template, abort, current_app, session, url_for
+)
 from typing import Dict, Any, Optional, List
 
 # --- Constants ---
 # Directory where Excel processing rule templates are stored
-EXCEL_RULE_TEMPLATE_DIR = './excel_rule_templates/'
+EXCEL_RULE_TEMPLATE_DIR = './excel_rule_templates/' # Ensure this matches the directory created
 LOG_FILE_UI = 'ui_viewer.log'        # Assuming shared log file with main app
 
 # --- Logging ---
@@ -38,23 +40,29 @@ def excel_rule_manager_page():
     """
     Renders the main UI page for managing Excel processing rule templates.
     Uses the 'excel_rule_manager.html' template.
+    Determines the correct 'Back' link URL based on session data.
     """
     logger.info("Rendering Excel Rule Template Manager page.")
 
-    # Determine the URL for the 'Back' link based on session data
+    # Determine the URL for the 'Back' link
     last_viewed_comparison = session.get('last_viewed_comparison')
+    back_url = url_for('ui.upload_config_page') # Default back URL
+
     if last_viewed_comparison:
-        # If a comparison page was last viewed, generate URL back to it
+        # If a comparison page was last viewed, try to generate URL back to it
         try:
-            back_url = url_for('ui.view_comparison', comparison_type=last_viewed_comparison)
-            logger.debug(f"Setting back URL to last viewed comparison: {last_viewed_comparison}")
+            # Ensure the comparison type is valid before generating URL
+            # This check might be more robust if we verify against current_app.config['COMPARISON_SHEETS']
+            if last_viewed_comparison in current_app.config.get('COMPARISON_SHEETS', []):
+                back_url = url_for('ui.view_comparison', comparison_type=last_viewed_comparison)
+                logger.debug(f"Setting back URL to last viewed comparison: {last_viewed_comparison}")
+            else:
+                logger.warning(f"Last viewed comparison '{last_viewed_comparison}' not in current available sheets. Defaulting back URL.")
         except Exception as e:
             # Handle cases where url_for might fail
             logger.warning(f"Could not build URL for last viewed comparison '{last_viewed_comparison}': {e}. Defaulting back URL.")
-            back_url = url_for('ui.upload_config_page') # Default to upload/config page
+            # back_url remains the default url_for('ui.upload_config_page')
     else:
-        # Otherwise, link back to the main upload/config page
-        back_url = url_for('ui.upload_config_page')
         logger.debug("Setting back URL to upload/config page (no last viewed comparison found in session).")
 
     # Render the excel_rule_manager.html file
@@ -226,6 +234,6 @@ def delete_excel_rule_template(filename):
         return jsonify({"error": "Failed to delete Excel rule template file."}), 500 # Server error
 
 # Note: The proxy_api_fetch route is specific to the DB update template manager (template_routes.py)
-# and is not needed for Excel rule templates unless there's a similar use case.
-# If needed, it could be copied or generalized.
+# and is not needed for Excel rule templates unless a similar use case arises.
+# If needed for fetching example Excel structures or something similar, it could be added here.
 
