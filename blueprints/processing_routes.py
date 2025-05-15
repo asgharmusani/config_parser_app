@@ -8,7 +8,7 @@ Includes API endpoints for:
 - Loading data from an existing processed file.
 - Simulating configuration template application.
 - Confirming and finalizing (simulated) updates.
-- Updating the application configuration, including logging level.
+- Updating the application configuration.
 """
 
 import os
@@ -96,6 +96,37 @@ def allowed_file(filename: str) -> bool:
     """Checks if the uploaded file has an allowed extension."""
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# --- MODIFICATION START: Define map_rule_entity_name_to_api_key ---
+def map_rule_entity_name_to_api_key(rule_entity_name: str) -> Optional[str]:
+    """
+    Maps an entity name from an Excel rule template to the corresponding key
+    used in the api_data dictionary (which comes from fetch_api_data).
+    This is a heuristic and might need to be more robust or configurable if
+    rule names and API data keys diverge significantly.
+
+    Args:
+        rule_entity_name: The 'name' field from an entity rule in the excelrule_template.json.
+
+    Returns:
+        The corresponding key for api_data (e.g., "vqs", "skills", "skill_exprs", "vags")
+        or None if no clear mapping is found.
+    """
+    name_lower = rule_entity_name.lower()
+    # Prioritize more specific matches first
+    if "skill_expression" in name_lower or "skill_expr" in name_lower: # Handles "Skill_Expressions", "Skill_exprs"
+        return "skill_exprs"
+    elif "vq" in name_lower or "dn" in name_lower: # Handles "VQs", "DNs"
+        return "vqs"
+    elif "skill" in name_lower: # Must be after skill_expression to avoid false positive
+        return "skills"
+    elif "vag" in name_lower:
+        return "vags"
+
+    logger.warning(f"Could not map rule entity name '{rule_entity_name}' to a known API data key. API data for this entity might not be used in comparison.")
+    return None # No clear mapping found
+# --- MODIFICATION END ---
+
 
 # --- API Routes ---
 
@@ -204,42 +235,48 @@ def run_comparison():
         logger.info(f"Copied original file to '{processed_filepath}' for processing.")
 
         # 2. Load the original workbook for the rule engine to read
-        original_workbook_for_rules = openpyxl.load_workbook(original_filepath, read_only=True, data_only=True)
+        # Load with data_only=True if you don't need formulas, but styles might be lost for strikethrough
+        # If rule engine needs cell objects for styles, load with read_only=False, data_only=False
+        original_workbook_for_rules = openpyxl.load_workbook(original_filepath, read_only=False, data_only=False)
         parsed_entities = rule_engine.process_workbook(original_workbook_for_rules)
         original_workbook_for_rules.close() # Close after rule engine is done
 
         # 3. Fetch API data AND Max IDs
-        api_data, max_dn_id, max_ag_id = fetch_api_data(app_config_settings)
-        if not any(api_data.values()):
-            logging.warning("API data fetch resulted in empty/partial datasets.")
-        # Cache raw API data for ID generator (if needed for fallback)
-        current_app.config['API_DATA_CACHE'] = api_data
+        all_api_data, max_dn_id, max_ag_id = fetch_api_data(app_config_settings)
+
+        # Cache raw API data (includes all types like 'vqs', 'skills', etc.)
+        # This is used by IdGenerator in update_routes.py if it needs to find a max ID.
+        current_app.config['API_DATA_CACHE'] = all_api_data
 
         # 4. Filter API data based on entities processed by the rule engine
         filtered_api_data = {}
-        enabled_rule_entity_names = parsed_entities.keys()
+        enabled_rule_entity_names = parsed_entities.keys() # Entities defined and enabled in the rule
 
         for rule_entity_name in enabled_rule_entity_names:
-            api_key = map_rule_entity_name_to_api_key(rule_entity_name)
-            if api_key and api_key in api_data: # Use 'api_data' (all fetched) for source
-                filtered_api_data[rule_entity_name] = api_data[api_key]
-                logger.debug(f"Including API data for '{rule_entity_name}' (mapped from api_key '{api_key}')")
-            elif api_key:
-                logger.warning(f"API key '{api_key}' (for rule '{rule_entity_name}') not found in fetched API data. API data keys: {list(api_data.keys())}")
-                filtered_api_data[rule_entity_name] = {} # Ensure key exists
+            # Map the rule's entity name (e.g., "VQs") to the key used in all_api_data (e.g., "vqs")
+            api_key_for_entity = map_rule_entity_name_to_api_key(rule_entity_name)
+            if api_key_for_entity and api_key_for_entity in all_api_data:
+                # If a mapping exists and data for that API key was fetched, include it
+                filtered_api_data[rule_entity_name] = all_api_data[api_key_for_entity]
+                logger.debug(f"Including API data for rule entity '{rule_entity_name}' (using API key '{api_key_for_entity}')")
+            elif api_key_for_entity:
+                # Mapping exists, but no data for this key was fetched from API
+                logger.warning(f"API key '{api_key_for_entity}' (for rule '{rule_entity_name}') not found in fetched API data. API data keys available: {list(all_api_data.keys())}")
+                filtered_api_data[rule_entity_name] = {} # Ensure key exists for comparison logic
             else:
-                 logger.warning(f"No API data mapping for rule entity '{rule_entity_name}'. It will only show as 'New in Sheet'.")
-                 filtered_api_data[rule_entity_name] = {}
+                 # No mapping found for this rule entity name
+                 logger.warning(f"No API data mapping defined for rule entity '{rule_entity_name}'. This entity will only show as 'New in Sheet' if found by rules.")
+                 filtered_api_data[rule_entity_name] = {} # Ensure key exists
 
-        if not any(filtered_api_data.values()) and any(api_data.values()):
-            logging.warning("API data was fetched, but none matched the entities defined in the Excel rule template.")
+        if not any(filtered_api_data.values()) and any(all_api_data.values()): # Check if any data remains after filtering
+            logging.warning("API data was fetched, but none of it matched the entities defined and enabled in the Excel rule template.")
 
 
-        # 5. Load the workbook that will be modified (the copy)
+        # 5. Load the workbook that will be modified (the copy for output)
         output_workbook = openpyxl.load_workbook(processed_filepath, read_only=False, data_only=False)
 
         # 6. Collect and Write Excel Outputs (Output sheets based on rules)
-        sheets_to_remove_base = [METADATA_SHEET_NAME]
+        sheets_to_remove_base = [METADATA_SHEET_NAME] # Base sheets to always try to remove
         sheet_data_for_comparison, intermediate_data_resolved = collect_and_write_excel_outputs(
             output_workbook, parsed_entities, app_config_settings, METADATA_SHEET_NAME, sheets_to_remove_base
         )
@@ -300,13 +337,6 @@ def run_comparison():
                 logger.debug("Output workbook closed.")
             except Exception as close_e:
                  logging.warning(f"Error closing output workbook: {close_e}")
-        # Optionally clean up the original uploaded file if it's different from processed_filepath
-        # if os.path.exists(original_filepath) and original_filepath != processed_filepath:
-        #     try:
-        #         os.remove(original_filepath)
-        #         logger.info(f"Removed original upload file: {original_filepath}")
-        #     except OSError as rm_err:
-        #         logger.warning(f"Could not remove original upload file {original_filepath}: {rm_err}")
 
 
 @processing_bp.route('/load-processed-file', methods=['POST'])
@@ -321,7 +351,7 @@ def load_processed_file():
         logger.warning("Load processed file request missing filename.")
         return jsonify({"error": "Filename not provided."}), 400
 
-    filename = secure_filename(request_data['filename']) # Sanitize filename
+    filename = secure_filename(request_data['filename'])
     filepath = os.path.join(UPLOAD_FOLDER, filename)
 
     logger.info(f"Attempting to load data from: {filepath}")
@@ -338,7 +368,6 @@ def load_processed_file():
     current_app.config['MAX_DN_ID'] = 0
     current_app.config['MAX_AG_ID'] = 0
 
-    # Use the utility function to read the file into cache
     if read_comparison_data(filepath): # This function is in utils.py
         logger.info(f"Successfully loaded data from '{filename}' into cache.")
         first_sheet = current_app.config.get('COMPARISON_SHEETS', [None])[0]
@@ -366,52 +395,34 @@ def update_config():
     """
     logger.info("Received request to update configuration.")
     try:
-        # Extract form data - keys must match the 'name' attributes in the HTML form
         settings_to_save = {
-            # 'source_file': request.form.get('source_file'), # Removed source_file
             'dn_url': request.form.get('dn_url'),
             'agent_group_url': request.form.get('agent_group_url'),
-            'api_timeout': request.form.get('timeout', type=int, default=15), # Get as int
+            'api_timeout': request.form.get('timeout', type=int, default=15),
             'ideal_agent_header_text': request.form.get('ideal_agent_header_text'),
             'ideal_agent_fallback_cell': request.form.get('ideal_agent_fallback_cell'),
             'vag_extraction_sheet': request.form.get('vag_extraction_sheet'),
             'log_level_str': request.form.get('log_level') # Get the log level string
         }
-        # Remove None values if any fields were missing in the form (optional)
-        # settings_to_save = {k: v for k, v in settings_to_save.items() if v is not None}
-        # Ensure essential keys have fallbacks if not submitted (though form should submit them)
+        # Ensure essential keys have fallbacks if not submitted
         if 'api_timeout' not in settings_to_save or settings_to_save['api_timeout'] is None:
-            settings_to_save['api_timeout'] = 15 # Default from config.py
+            settings_to_save['api_timeout'] = 15
         if 'log_level_str' not in settings_to_save or settings_to_save['log_level_str'] is None:
-            settings_to_save['log_level_str'] = 'INFO' # Default from config.py
+            settings_to_save['log_level_str'] = 'INFO'
 
-
-        # Get config file path from app settings or use default
         config_path = current_app.config.get('CONFIG_FILE_PATH', 'config.ini')
-
-        # Use the save_config function (imported from config.py)
         save_config(config_path, settings_to_save)
 
         # Update the config cache in the running app
-        # The load_config in app.py will handle converting log_level_str to log_level_value
-        # So, we only need to store the string representation here for consistency with save_config
         current_app.config['APP_SETTINGS'].update(settings_to_save)
-        # If you want to immediately apply log level change without restart, you'd reconfigure logging here:
-        # from config import LOG_LEVEL_MAP
-        # new_level_val = LOG_LEVEL_MAP.get(settings_to_save['log_level_str'].upper(), logging.INFO)
-        # logging.getLogger().setLevel(new_level_val)
-        # for handler in logging.getLogger().handlers: handler.setLevel(new_level_val)
-        # logger.info(f"Logging level dynamically updated to: {settings_to_save['log_level_str']}")
-        # For now, a restart is mentioned as required in the UI.
-
-        logger.info("Configuration saved and application cache updated.")
+        # If log level changed, reconfigure logger (requires app restart for full effect on all modules)
+        # For simplicity, we'll assume restart for now.
+        logger.info("Configuration saved. App cache updated. Restart may be needed for log level change.")
         flash('Configuration saved successfully to config.ini. Restart may be needed for some changes.', 'success')
 
     except (IOError, ValueError, Exception) as e:
         logger.error(f"Error saving configuration: {e}", exc_info=True)
         flash(f'Error saving configuration: {e}', 'error')
-
-    # Redirect back to the config page
     return redirect(url_for('ui.upload_config_page'))
 
 
@@ -423,7 +434,6 @@ def simulate_configuration():
     """
     logger.info("Request received for /api/simulate-configuration")
     try:
-        # --- 1. Get and Validate Request Data ---
         request_data = request.get_json()
         if not request_data:
             logger.warning("Simulate config request: Invalid/empty JSON payload.")
@@ -441,16 +451,10 @@ def simulate_configuration():
 
         logger.info(f"Attempting to simulate template '{template_name}' for {len(selected_row_identifiers)} selected item(s).")
 
-        # --- 2. Load the Specified Template ---
-        if '..' in template_name or template_name.startswith('/'):
-            logger.error(f"Invalid template name requested: {template_name}")
-            abort(400, description="Invalid template name.")
-
         template_path = os.path.join(TEMPLATE_DIR, template_name)
         if not os.path.exists(template_path) or not os.path.isfile(template_path):
             logger.error(f"Template file not found at path: {template_path}")
             return jsonify({"error": f"Template '{template_name}' not found."}), 404
-
         try:
             with open(template_path, 'r', encoding='utf-8') as f:
                 template_json = json.load(f)
@@ -459,7 +463,6 @@ def simulate_configuration():
             logger.error(f"Error reading/parsing template {template_name}: {e}", exc_info=True)
             return jsonify({"error": f"Failed to load/parse template '{template_name}'."}), 500
 
-        # --- 3. Retrieve Data for Selected Rows (from cache using dynamic headers) ---
         all_excel_data = current_app.config.get('EXCEL_DATA', {})
         sheet_headers_map = current_app.config.get('SHEET_HEADERS', {})
         rows_to_process = []
@@ -467,17 +470,9 @@ def simulate_configuration():
 
         for sheet_name, sheet_data in all_excel_data.items():
             headers = sheet_headers_map.get(sheet_name)
-            if not headers:
-                logging.warning(f"Headers not found in cache for sheet '{sheet_name}', skipping row lookup.")
-                continue
-
-            id_key = headers[0] # Use the first header as the identifier key
-
-            entity_type = None
-            if sheet_name in DN_SHEETS: entity_type = 'dn'
-            elif sheet_name in AGENT_GROUP_SHEETS: entity_type = 'agent_group'
-            else: logger.warning(f"Sheet '{sheet_name}' not mapped to DN or AG type for ID generation.")
-
+            if not headers: continue
+            id_key = headers[0]
+            entity_type = 'dn' if sheet_name in DN_SHEETS else ('agent_group' if sheet_name in AGENT_GROUP_SHEETS else None)
             for row in sheet_data:
                 row_identifier = row.get(id_key)
                 if row_identifier in selected_row_identifiers and row_identifier not in processed_identifiers:
@@ -490,7 +485,6 @@ def simulate_configuration():
         logger.info(f"Retrieved data for {found_count} of {len(selected_row_identifiers)} identifiers from cached data.")
         if missing_count > 0: logger.warning(f"Could not find cached data for identifiers: {missing_identifiers}")
 
-        # --- 4. Generate Payloads ---
         generated_payloads = []
         processing_errors = []
         id_generator = IdGenerator(
@@ -511,14 +505,13 @@ def simulate_configuration():
                 generated_payloads.append(generated_payload)
             except Exception as e:
                 logger.error(f"Error processing template for row '{row_id_for_log}': {e}", exc_info=True)
-                processing_errors.append(f"Error for row '{row_id_for_log}': {e}")
+                processing_errors.append(f"Error processing row '{row_id_for_log}': {e}")
 
-        # --- 5. Construct Response ---
         response_status_code = 200
-        response_data = { "message": f"Simulation complete. Generated {len(generated_payloads)} payloads.", "status": "Simulation Success", "processed_count": found_count, "payloads": generated_payloads, "errors": [] }
+        response_data = { "message": f"Simulation complete for template '{template_name}'. Generated {len(generated_payloads)} payloads for review.", "status": "Simulation Success", "processed_count": found_count, "payloads": generated_payloads, "errors": [] }
         if missing_count > 0: response_data["message"] += f" Could not find data for {missing_count} identifiers: {list(missing_identifiers)}."; response_data["status"] = "Simulation Partial Success / Missing Data"; response_status_code = 207
-        if processing_errors: response_data["errors"] = [str(e) for e in processing_errors]; response_data["message"] += f" Encountered {len(processing_errors)} errors during generation."; response_data["status"] = "Simulation Partial Success / Errors" if response_status_code == 200 else response_data["status"]; response_status_code = 207
-        logger.info(f"Simulation successful. Returning {len(generated_payloads)} payloads.")
+        if processing_errors: response_data["errors"] = [str(e) for e in processing_errors]; response_data["message"] += f" Encountered {len(processing_errors)} errors during payload generation."; response_data["status"] = "Simulation Partial Success / Errors" if response_status_code == 200 else response_data["status"]; response_status_code = 207
+        logger.info(f"Simulation successful. Returning {len(generated_payloads)} generated payloads.")
         return jsonify(response_data), response_status_code
 
     except Exception as e:
