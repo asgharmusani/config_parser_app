@@ -3,7 +3,8 @@
 Handles loading and saving application configuration from/to an INI file.
 Focuses on API timeout, basic sheet layout hints (as fallbacks),
 and a configurable logging level.
-API URLs are now expected to be defined within Excel Rule Templates.
+API URLs are now expected to be defined within Excel Rule Templates,
+and the source Excel file is handled via UI upload.
 """
 
 import configparser
@@ -12,24 +13,25 @@ import os
 from typing import Dict, Any
 
 # Import openpyxl utils for cell coordinate validation, if still needed for other parts
-# from openpyxl.utils import cell as openpyxl_cell_utils # Not directly used in this version
+# from openpyxl.utils import cell as openpyxl_cell_utils # Not directly used here anymore
 
 logger = logging.getLogger(__name__) # Use module-specific logger
 
 # Define the expected structure of the config.ini file for validation.
 # 'API' section now only expects 'timeout'.
-# 'SheetLayout' keys are kept as they might be used as fallbacks or by legacy parts.
+# 'SheetLayout' keys are kept as they might be used as fallbacks.
+# 'Files' section is no longer actively used for 'source_file' by the UI workflow.
 EXPECTED_CONFIG = {
-    # 'Files': [], # This section can be removed if no file-related global configs
-    'API': ['timeout'], # Only timeout is expected here now
+    'API': ['timeout'],
     'SheetLayout': ['ideal_agent_header_text', 'ideal_agent_fallback_cell', 'vag_extraction_sheet'],
     'Logging': ['level']
+    # 'Files': [] # Can be omitted if truly no global file settings are expected
 }
 
-# Define default values for optional settings or if file is missing.
+# Define default values for settings if they are missing in config.ini.
 DEFAULT_CONFIG = {
     'API': {'timeout': '15'}, # Timeout as string initially, converted later
-    'SheetLayout': { # Provide defaults for SheetLayout as well
+    'SheetLayout': {
         'ideal_agent_header_text': 'Ideal Agent',
         'ideal_agent_fallback_cell': 'C2',
         'vag_extraction_sheet': 'Default Targeting- Group'
@@ -37,7 +39,7 @@ DEFAULT_CONFIG = {
     'Logging': {'level': 'INFO'} # Default logging level
 }
 
-# Mapping from log level strings to logging module constants
+# Mapping from log level strings (read from config) to logging module constants.
 LOG_LEVEL_MAP = {
     'DEBUG': logging.DEBUG,
     'INFO': logging.INFO,
@@ -45,26 +47,26 @@ LOG_LEVEL_MAP = {
     'ERROR': logging.ERROR,
     'CRITICAL': logging.CRITICAL
 }
-# Reverse mapping for saving
+# Reverse mapping for saving the logging level string back to config.ini.
 LOG_LEVEL_TO_STRING_MAP = {v: k for k, v in LOG_LEVEL_MAP.items()}
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """
     Loads configuration from the specified INI file.
-    Uses defaults for missing optional values. Validates required sections/options.
-    Converts logging level string to logging constant and timeout to int.
+    Uses defaults for missing optional values. Validates expected sections/options.
+    Converts logging level string to a logging constant and timeout to an integer.
 
     Args:
         config_path: Path to the config.ini file.
 
     Returns:
-        A dictionary containing the configuration settings, using internal keys
-        (e.g., 'api_timeout', 'log_level_value').
+        A dictionary containing the configuration settings. Internal keys like
+        'api_timeout' (int) and 'log_level_value' (logging constant) are used.
 
     Raises:
         FileNotFoundError: If the config file doesn't exist and cannot be created with defaults.
-        ValueError: For missing required sections/options or type conversion errors.
+        ValueError: For missing expected sections/options or type conversion errors.
     """
     logger.info(f"Attempting to load configuration from: {config_path}")
     config = configparser.ConfigParser(interpolation=None) # Disable % interpolation
@@ -76,8 +78,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
         try:
             default_config_obj = configparser.ConfigParser(interpolation=None)
             # Populate with sections and keys from DEFAULT_CONFIG
-            for section, section_keys_values in DEFAULT_CONFIG.items(): # Corrected variable name
+            for section, section_keys_values in DEFAULT_CONFIG.items():
                 default_config_obj[section] = section_keys_values
+            # Write the default configuration to the specified path
             with open(config_path, 'w', encoding='utf-8') as default_configfile:
                 default_config_obj.write(default_configfile)
             logger.info(f"Created default configuration file at '{config_path}'. Please review it.")
@@ -87,18 +90,16 @@ def load_config(config_path: str) -> Dict[str, Any]:
             logger.error(f"Could not create default configuration file at '{config_path}': {e_create}")
             raise FileNotFoundError(f"Configuration file '{config_path}' not found and could not be created.")
 
-
     # Read the configuration file (might be the newly created default one)
     try:
         # Ensure config object is fresh if it was just created by reading it again
-        # This check might be redundant if creation logic above ensures config is populated
-        if not config.sections():
+        if not config.sections(): # If config is empty (e.g. read failed silently before)
             config.read(config_path, encoding='utf-8')
     except configparser.Error as e:
         logger.error(f"Error parsing configuration file '{config_path}': {e}")
         raise ValueError(f"Error parsing configuration file: {e}")
 
-    # Dictionary to store the loaded settings
+    # Dictionary to store the loaded settings using internal, consistent key names
     settings = {}
 
     # Validate and extract settings based on the EXPECTED_CONFIG structure
@@ -113,25 +114,24 @@ def load_config(config_path: str) -> Dict[str, Any]:
                  msg = f"Missing required section '[{section}]' in configuration file and no defaults provided."
                  logger.error(msg)
                  raise ValueError(msg)
-            else: # Section has no required keys (like 'Files' now), it's okay if missing
+            else: # Section has no required keys, okay if missing
                 logger.debug(f"Section '[{section}]' not found, but no keys required. Skipping.")
-                # settings[section] = {} # No need to create empty section in settings dict
                 continue # Skip key processing for this section
 
         # Process each expected key within the section
         for key in keys:
-            # internal_key_name = key # Default internal key name # Not needed with flat settings dict
             if config.has_option(section, key):
                 value_str = config.get(section, key)
-            elif key in DEFAULT_CONFIG.get(section, {}):
+            elif key in DEFAULT_CONFIG.get(section, {}): # Check if key has a default in this section
                 value_str = DEFAULT_CONFIG[section][key]
                 logger.debug(f"Setting '{key}' in '[{section}]' not found, using default: {value_str}")
             else:
-                msg = f"Missing required option '{key}' in section '[{section}]' and no default provided."
+                # Option is expected but missing and has no default
+                msg = f"Missing expected option '{key}' in section '[{section}]' and no default provided."
                 logger.error(msg)
                 raise ValueError(msg)
 
-            # Perform type conversion and specific key mapping
+            # Perform type conversion and specific key mapping for internal use
             if key == 'timeout' and section == 'API':
                 try:
                     # Store timeout as integer under the key 'api_timeout'
@@ -149,24 +149,25 @@ def load_config(config_path: str) -> Dict[str, Any]:
                 if log_level_str_upper not in LOG_LEVEL_MAP:
                     logger.warning(f"Invalid logging level '{value_str}' in config. Defaulting to INFO.")
             else:
-                # Store other keys as strings using the original key name
+                # Store other keys as strings using the original key name from config.ini
                 settings[key] = value_str
 
 
-    # --- Post-load validation for specific settings ---
+    # --- Post-load validation for specific settings (if any remain critical) ---
     # Example: Validate fallback cell format (e.g., "C2")
     fallback_cell_key = 'ideal_agent_fallback_cell'
-    if fallback_cell_key in settings: # Check if key exists in settings (it should if required or has default)
+    if fallback_cell_key in settings:
         try:
             # Import only when needed, to avoid circular dependencies if utils.py imports config.py
             from openpyxl.utils import cell as openpyxl_cell_utils_validator
             openpyxl_cell_utils_validator.coordinate_to_tuple(settings[fallback_cell_key])
         except openpyxl_cell_utils_validator.IllegalCharacterError:
             msg = f"Invalid format for '{fallback_cell_key}' in config: {settings[fallback_cell_key]}"
-            logging.warning(f"{msg} This setting might not work as expected.") # Downgrade to warning
+            logging.warning(f"{msg} This setting might not work as expected.")
         except ImportError:
             logger.warning("openpyxl.utils.cell could not be imported. Skipping ideal_agent_fallback_cell validation.")
-    # else: # If not in settings, it means it's not required by EXPECTED_CONFIG or used default
+    # If the key 'ideal_agent_fallback_cell' is strictly required, a check for its existence
+    # should be here or implicitly handled by EXPECTED_CONFIG.
 
     logger.info("Configuration loaded successfully.")
     return settings
@@ -175,26 +176,23 @@ def load_config(config_path: str) -> Dict[str, Any]:
 def save_config(config_path: str, settings: Dict[str, Any]):
     """
     Saves the provided settings dictionary to the INI configuration file.
-    Organizes settings into sections based on their internal keys.
-    Converts logging constant back to string for saving.
-    API URLs (dn_url, agent_group_url) are no longer saved here.
+    Organizes settings into sections. API URLs are no longer managed here.
 
     Args:
         config_path: Path to the config.ini file.
         settings: Dictionary containing the configuration settings to save.
-                  Keys should match the keys used internally (e.g., 'api_timeout', 'log_level_str').
+                  Keys should match the keys used internally by the application
+                  (e.g., 'api_timeout', 'log_level_str').
     """
     logger.info(f"Attempting to save configuration to: {config_path}")
     config = configparser.ConfigParser(interpolation=None)
 
-    # Reconstruct config structure from the flat 'settings' dict
-    # Map internal keys back to their INI sections and keys
+    # Reconstruct config structure from the 'settings' dict for writing to INI
 
     # API Section
     config['API'] = {}
     if 'api_timeout' in settings: # Use internal key 'api_timeout'
-        config['API']['timeout'] = str(settings['api_timeout']) # Save as string
-    # dn_url and agent_group_url are removed from this section
+        config['API']['timeout'] = str(settings['api_timeout']) # Save as string in INI
 
     # SheetLayout Section
     config['SheetLayout'] = {}
@@ -209,18 +207,17 @@ def save_config(config_path: str, settings: Dict[str, Any]):
     config['Logging'] = {}
     if 'log_level_str' in settings: # Use the string representation for saving
         config['Logging']['level'] = settings['log_level_str'].upper() # Ensure uppercase
-    elif 'log_level_value' in settings: # Fallback if only value is present
+    elif 'log_level_value' in settings: # Fallback if only the logging constant is present
         # Convert logging constant back to string
         config['Logging']['level'] = LOG_LEVEL_TO_STRING_MAP.get(settings['log_level_value'], 'INFO')
-    else: # Default if not in settings
+    else: # Default if not in settings at all
         config['Logging']['level'] = 'INFO'
 
 
-    # Files Section (Currently empty, but create section header for consistency)
-    # This section is no longer used for 'source_file' by the main app flow.
+    # Files Section (No longer actively used for source_file by UI, but keep section for structure)
     if not config.has_section('Files'): # Create section if it doesn't exist
         config['Files'] = {}
-    # If you had other file-related settings, they would go here:
+    # If you had other file-related settings, they would be added here:
     # if 'some_other_file_setting' in settings:
     #     config['Files']['some_other_file_setting'] = settings['some_other_file_setting']
 

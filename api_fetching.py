@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Handles fetching data from external APIs as specified in Excel Rule Templates.
+Handles fetching data from external APIs as specified in Comparison Rule Templates.
 
 Core Function:
 - fetch_and_process_api_data_for_entity: Fetches data from a rule-specific API URL,
@@ -24,35 +24,37 @@ except ImportError:
     def match_identifier_logic(value_to_check_str: str, identifier_rule: Dict[str, Any]) -> bool:
         """Dummy identifier matching function if import fails."""
         logging.error("Dummy match_identifier_logic called. Real function not imported from utils.py.")
-        # Depending on desired fallback, this could return True to process all items,
-        # or False to process no items if the real logic is critical.
-        return False # Safest fallback is to not match if logic is missing.
+        # Fallback: True might process too much, False might process nothing.
+        # False is safer if the logic is critical for filtering.
+        return False
 
 logger = logging.getLogger(__name__) # Use module-specific logger
 
 
-# fetch_max_ids_from_config_urls function has been REMOVED as Max IDs are now
-# aggregated in processing_routes.py based on results from fetch_and_process_api_data_for_entity.
+# The function fetch_max_ids_from_config_urls has been REMOVED.
+# Max ID calculation for the *overall system state* (to be written to Metadata sheet)
+# will now be an aggregation in processing_routes.py, based on the max IDs
+# returned by fetch_and_process_api_data_for_entity for each API call made.
 
 # --- Function to Fetch and Process Data for a Specific Entity Rule ---
 def fetch_and_process_api_data_for_entity(
     api_url: str,
-    entity_name: str, # The 'name' of the entity from the rule
-    rule_definition: Dict[str, Any], # The full rule definition for this entity
-    config: Dict[str, Any] # Global app config (for 'api_timeout')
+    entity_name: str, # The 'name' of the entity from the comparison rule
+    comparison_rule_entity_definition: Dict[str, Any], # The full rule definition for this entity
+    app_config: Dict[str, Any] # Global app config (for 'api_timeout')
 ) -> Tuple[Dict[str, Any], int]:
     """
-    Fetches data from the API URL specified in an entity rule.
-    Filters the API items based on the rule's identifier.
+    Fetches data from the API URL specified in an entity's comparison rule.
+    Filters the API items based on the 'identifier' specified in the comparison rule.
     Processes matching items into the format expected by the comparison logic.
-    Calculates the maximum numeric ID found in the *filtered* API response.
+    Calculates the maximum numeric ID found in this *filtered* API response.
 
     Args:
         api_url: The direct API URL from the rule's 'comparisonApiUrl'.
         entity_name: The name of the entity rule (e.g., "VQs", "Skill_Expressions").
-        rule_definition: The dictionary containing the full rule for this entity,
-                         including 'identifier' and optional 'apiProcessingHints'.
-        config: The global application configuration (for 'api_timeout').
+        comparison_rule_entity_definition: The dictionary containing the full rule for this entity,
+                                           including 'identifier' and 'apiProcessingHints'.
+        app_config: The global application configuration (for 'api_timeout').
 
     Returns:
         A tuple containing:
@@ -64,7 +66,7 @@ def fetch_and_process_api_data_for_entity(
     """
     logger.info(f"Fetching API data for entity '{entity_name}' from URL: {api_url}")
     # Get timeout from global app config, with a default
-    timeout = config.get('api_timeout', 15)
+    timeout = app_config.get('api_timeout', 15)
     processed_api_data: Dict[str, Any] = {}
     max_id_from_this_api = 0 # Initialize max ID for this specific API call
 
@@ -81,29 +83,32 @@ def fetch_and_process_api_data_for_entity(
         if not isinstance(raw_api_response_list, list):
             logger.error(f"API response for '{entity_name}' from {api_url} is not a list. Response type: {type(raw_api_response_list)}. Response: {raw_api_response_list}")
             return processed_api_data, max_id_from_this_api
-        logging.info(f"Successfully fetched {len(raw_api_response_list)} raw items for entity '{entity_name}'.")
+        logging.info(f"Successfully fetched {len(raw_api_response_list)} raw items for entity '{entity_name}' from {api_url}.")
 
         # Get processing hints from the rule, with defaults
         # These hints guide how to extract key fields from the API response items.
-        hints = rule_definition.get("apiProcessingHints", {})
-        id_field_in_api = hints.get("idField", "id") # Field in API item that holds the ID
-        name_field_in_api = hints.get("nameField", "name") # Field in API item used as primary identifier/name for simple entities
-        # Field from API item to use for identifier matching against the rule's identifier
-        api_identifier_source_field = hints.get("apiIdentifierField", name_field_in_api)
+        hints = comparison_rule_entity_definition.get("apiProcessingHints", {})
+        id_field_in_api = hints.get("idField", "id") # Field in API item that holds its unique ID
+        # Field in API item used as primary identifier/name for simple entities (VQs, Skills, VAGs)
+        # This will be the key in processed_api_data for these simple types.
+        primary_key_field_in_api = hints.get("primaryKeyFieldInAPI", "name")
+        # Field from API item to use for identifier matching against the rule's "identifier"
+        # This helps filter API items to only those relevant to the current entity rule.
+        api_identifier_source_field = hints.get("apiIdentifierField", primary_key_field_in_api)
 
         # Fields specific to complex entities like skill expressions
         expression_field_in_api = hints.get("expressionField", "expression")
-        ideal_field_in_api = hints.get("idealField", "IdealExpression") # Matches 'IdealExpression' from Genesys API
+        ideal_field_in_api = hints.get("idealField", "IdealExpression")
 
-        # Get the identifier rule from the main rule_definition (this is rule['identifier'])
-        entity_identifier_rule = rule_definition.get("identifier")
+        # Get the identifier rule from the main comparison_rule_entity_definition
+        # This identifier is used to filter the API items.
+        entity_identifier_rule = comparison_rule_entity_definition.get("identifier")
         if not entity_identifier_rule:
-            logger.error(f"No 'identifier' found in rule definition for entity '{entity_name}'. Cannot filter API data.")
+            logger.error(f"No 'identifier' found in comparison rule definition for entity '{entity_name}'. Cannot filter API data.")
             return processed_api_data, max_id_from_this_api
 
         # Determine if this entity type needs complex processing (like skill expressions)
         # This is a heuristic based on the entity name from the rule.
-        # A more robust method could be a flag in the rule, e.g., "apiDataStructure": "complex"
         is_complex_entity = "expression" in entity_name.lower() or \
                             "skill_expr" in entity_name.lower()
         if is_complex_entity:
@@ -125,8 +130,8 @@ def fetch_and_process_api_data_for_entity(
                 logger.debug(f"API item for '{entity_name}' missing identifier source field '{api_identifier_source_field}'. Skipping. Item: {item_data}")
                 continue
 
-            # Use the shared match_identifier_logic from utils.
-            # The entity_identifier_rule is the 'identifier' object from the excelrule_template.json
+            # Use the shared match_identifier_logic from utils.py
+            # The entity_identifier_rule is the 'identifier' object from the comparison_rule_template.json
             if not match_identifier_logic(str(value_to_match_in_api), entity_identifier_rule):
                 logger.debug(f"API item for '{entity_name}' did not match rule identifier. Value checked: '{value_to_match_in_api}'. Rule: {entity_identifier_rule}. Item: {item_data}")
                 continue
@@ -143,13 +148,13 @@ def fetch_and_process_api_data_for_entity(
             if item_id_str.isdigit():
                 try:
                     max_id_from_this_api = max(max_id_from_this_api, int(item_id_str))
-                except ValueError: # Should not happen due to isdigit, but safety
+                except ValueError:
                     logger.warning(f"Could not convert API ID '{item_id_str}' to int for max calculation (entity: {entity_name}).")
 
 
             # Structure the data for comparison_logic.py
             if is_complex_entity:
-                # For skill expressions, we expect 'expression' and 'IdealExpression'
+                # For skill expressions, construct a key from expression and ideal expression
                 expr_val = item_data.get(expression_field_in_api, "") or ""
                 ideal_val = item_data.get(ideal_field_in_api, "") or ""
 
@@ -158,34 +163,35 @@ def fetch_and_process_api_data_for_entity(
                 norm_ideal = ideal_val.replace(" ", "").replace('\u00A0', '').replace("|", " | ").replace("&", " & ")
 
                 # The comparison key for skill expressions is usually combined
-                api_item_key = norm_expr
+                api_item_key_for_dict = norm_expr # Default key
                 if norm_ideal: # Only add ideal if it exists
-                    api_item_key = f"{norm_expr} {norm_ideal}".strip()
+                    api_item_key_for_dict = f"{norm_expr} {norm_ideal}".strip()
 
-                if not api_item_key: # Skip if key is empty after normalization
+                if not api_item_key_for_dict: # Skip if key is empty after normalization
                     logger.warning(f"Skipping complex API item for '{entity_name}' (matched identifier) due to empty key after normalization: {item_data}")
                     continue
 
                 # Store detailed dictionary for complex entities
-                processed_api_data[api_item_key] = {
+                processed_api_data[api_item_key_for_dict] = {
                     'id': item_id_str,
-                    'expr': norm_expr,
-                    'ideal': norm_ideal
+                    'expr': norm_expr,  # Store normalized expression
+                    'ideal': norm_ideal # Store normalized ideal expression
                 }
             else:
-                # For simpler entities (VQs, Skills, VAGs), use name_field as key and ID as value
-                item_name_val = item_data.get(name_field_in_api)
+                # For simpler entities (VQs, Skills, VAGs), use the value of 'primaryKeyFieldInAPI' as the key
+                # and the item's ID as the value in processed_api_data.
+                item_name_val = item_data.get(primary_key_field_in_api)
                 if item_name_val is None:
-                    logger.warning(f"Skipping simple API item for '{entity_name}' (matched identifier) due to missing name (expected field: '{name_field_in_api}'): {item_data}")
+                    logger.warning(f"Skipping simple API item for '{entity_name}' (matched identifier) due to missing name/key field ('{primary_key_field_in_api}'): {item_data}")
                     continue
 
                 # Normalize the name field to match Excel processing (remove spaces, NBSP)
-                api_item_key = str(item_name_val).replace(" ", "").replace('\u00A0', '')
-                if not api_item_key: # Skip if key is empty after normalization
+                api_item_key_for_dict = str(item_name_val).replace(" ", "").replace('\u00A0', '')
+                if not api_item_key_for_dict: # Skip if key is empty after normalization
                     logger.warning(f"Skipping simple API item for '{entity_name}' (matched identifier) due to empty key after normalization: {item_data}")
                     continue
                 # Store just the ID string for simpler entities
-                processed_api_data[api_item_key] = item_id_str
+                processed_api_data[api_item_key_for_dict] = item_id_str
 
         logger.info(f"Processed {len(processed_api_data)} matching items for entity '{entity_name}' from API. Max ID in this filtered response: {max_id_from_this_api}")
 

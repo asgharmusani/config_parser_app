@@ -1,170 +1,116 @@
 {% extends "base.html" %} {# Inherit from the base layout #}
 
-{% block title %}Upload & Configure{% endblock %}
+{% block title %}Process & Configure{% endblock %}
 
 {% block head %}
-    {# Add any page-specific CSS or meta tags here if needed #}
     <style>
-        /* Additional styles specific to this page */
-        .config-section {
-            margin-bottom: 1.5rem; /* 24px */
-            padding-bottom: 1rem; /* 16px */
-            border-bottom: 1px solid #e5e7eb; /* gray-200 */
-        }
-        .config-section:last-child {
-            border-bottom: none;
-            margin-bottom: 0;
-            padding-bottom: 0;
-        }
-        .config-section h3 {
-            margin-bottom: 1rem; /* 16px */
-            font-size: 1.125rem; /* text-lg */
-            line-height: 1.75rem;
-            font-weight: 500; /* medium */
-            color: #1f2937; /* gray-800 */
-        }
-        .config-item {
-            margin-bottom: 1rem; /* 16px */
-        }
-        .config-item label {
-            display: block;
-            margin-bottom: 0.25rem; /* 4px */
-            font-weight: 500; /* medium */
-            color: #374151; /* gray-700 */
-            font-size: 0.875rem; /* text-sm */
-            line-height: 1.25rem;
-        }
-        .config-item input[type=text],
-        .config-item input[type=number],
-        .config-item select { /* Added select here */
-            width: 100%;
-            padding: 0.5rem 0.75rem; /* 8px 12px */
-            border: 1px solid #d1d5db; /* gray-300 */
-            border-radius: 0.375rem; /* rounded-md */
-            font-size: 0.875rem; /* text-sm */
-            line-height: 1.25rem;
+        /* Styles from previous version, can be kept or refined */
+        .config-section { margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; }
+        .config-section:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .config-section h3 { margin-bottom: 1rem; font-size: 1.125rem; line-height: 1.75rem; font-weight: 500; color: #1f2937; }
+        .config-item { margin-bottom: 1rem; }
+        .config-item label { display: block; margin-bottom: 0.25rem; font-weight: 500; color: #374151; font-size: 0.875rem; line-height: 1.25rem; }
+        .config-item input[type=text], .config-item input[type=number], .config-item select {
+            width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db;
+            border-radius: 0.375rem; font-size: 0.875rem; line-height: 1.25rem;
             box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
         }
-        .config-item input:focus,
-        .config-item select:focus { /* Added select here */
-             border-color: #4f46e5; /* indigo-600 */
-             box-shadow: 0 0 0 1px #4f46e5, inset 0 1px 2px rgba(0,0,0,0.05); /* Focus ring */
-             outline: none; /* Remove default outline */
+        .config-item input:focus, .config-item select:focus {
+             border-color: #4f46e5; box-shadow: 0 0 0 1px #4f46e5, inset 0 1px 2px rgba(0,0,0,0.05);
+             outline: none;
         }
-        .config-item p.help {
-            font-size: 0.75rem; /* text-xs */
-            line-height: 1rem;
-            color: #6b7280; /* gray-500 */
-            margin-top: 0.25rem; /* 4px */
+        .config-item p.help { font-size: 0.75rem; line-height: 1rem; color: #6b7280; margin-top: 0.25rem; }
+        .file-list-item { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid #e5e7eb; }
+        .file-list-item:last-child { border-bottom: none; }
+        .action-button {
+            background-color: #4f46e5; color: white; font-weight: 500; padding: 0.5rem 1rem;
+            border-radius: 0.375rem; font-size: 0.875rem; line-height: 1.25rem;
+            transition: background-color 0.15s ease-in-out;
         }
-        /* Styling for file list */
-        .file-list-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 0.5rem 0; /* 8px */
-            border-bottom: 1px solid #e5e7eb; /* gray-200 */
-        }
-         .file-list-item:last-child {
-            border-bottom: none;
-         }
-        .load-button {
-             margin-left: 1rem; /* 16px */
-             padding: 0.25rem 0.75rem; /* Smaller padding */
-        }
+        .action-button:hover { background-color: #4338ca; }
+        .action-button:disabled { background-color: #a5b4fc; cursor: not-allowed; }
+        .upload-section { margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 1px dashed #cbd5e1; }
+        .upload-section:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        /* Initially hide rule select for new file until file is chosen */
+        /* #excelRuleSelectForNewFileContainer { display: none; } */ /* This specific container is removed */
     </style>
 {% endblock %}
 
-{# Navigation block is inherited from base.html, so no override needed here #}
-
-
 {% block messages %}
-    {# Area for displaying flash messages or other status messages specific to this page #}
     <div id="uploadConfigMessageArea" class="mb-4">
-        {# Include the partial template for rendering flash messages #}
         {% include '_messages.html' %}
     </div>
 {% endblock %}
 
-
 {% block content %}
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-    {# --- Column 1: Upload & Process --- #}
+    {# --- Column 1: File Operations --- #}
     <div class="lg:col-span-1 bg-white p-6 shadow rounded-lg space-y-6">
-        {# Section 1: Upload and Process New File #}
-        <div>
-            <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">1. Process New File</h2>
-            {# Form for uploading the original source Excel file #}
-            {# Action is handled by JavaScript to call the correct API endpoint #}
-            <form id="uploadForm" method="post" enctype="multipart/form-data">
-                <div class="mb-4">
-                    <label for="sourceExcelFile" class="block text-sm font-medium text-gray-700 mb-1">Select Source Excel File (.xlsx):</label>
-                    <input type="file" id="sourceExcelFile" name="sourceExcelFile" required accept=".xlsx"
-                           class="block w-full text-sm text-gray-500
-                                  file:mr-4 file:py-2 file:px-4
-                                  file:rounded-md file:border-0
-                                  file:text-sm file:font-semibold
-                                  file:bg-indigo-50 file:text-indigo-700
-                                  hover:file:bg-indigo-100 cursor-pointer border border-gray-300 rounded-md p-1">
-                    <p class="mt-1 text-xs text-gray-500">Upload the original Excel file for comparison.</p>
-                </div>
-                <div class="text-right">
-                    {# This button triggers the file upload via JavaScript #}
-                    <button type="submit" id="uploadButton"
-                            class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-sm transition duration-150 ease-in-out">
-                        Upload File
-                    </button>
-                </div>
-            </form>
-            {# Area shown after successful upload to trigger processing #}
-            <div id="processingTriggerArea" class="mt-4 text-sm" style="display: none;">
-                <p id="uploadSuccessMessage" class="text-green-700 mb-2 font-medium"></p>
-                <div class="mb-3">
-                    <label for="excelRuleSelect" class="block text-sm font-medium text-gray-700 mb-1">Select Excel Processing Rule:</label>
-                    <select id="excelRuleSelect" name="excelRuleTemplateName"
-                            class="w-full border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
-                        <option value="">Loading rules...</option> {# Populated by JS #}
-                    </select>
-                </div>
-                <button id="runComparisonButton" onclick="runComparison()" disabled
-                        class="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md text-sm transition duration-150 ease-in-out disabled:opacity-50">
-                    Run Comparison & View Results
-                </button>
-                <p class="mt-2 text-xs text-gray-600">
-                    This will compare the uploaded file with API data using the selected rule, generate a `*_processed.xlsx` file in the uploads folder, and load the results.
-                </p>
-            </div>
+
+        {# Global Rule Selection & Comparison Toggle - MOVED TO TOP of this column #}
+        <div class="config-item pb-4 border-b border-gray-300">
+            <label for="globalExcelRuleSelect" class="block text-sm font-medium text-gray-700 mb-1">Select Excel Processing & Comparison Rule:</label>
+            <select id="globalExcelRuleSelect" name="excelRuleTemplateNameGlobal"
+                    class="w-full border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="">Loading rules...</option> {# Populated by JS #}
+            </select>
+            <p class="mt-1 text-xs text-gray-500">This rule defines how Excel data is parsed and which APIs are used for comparison.</p>
         </div>
 
-        {# Separator #}
-        <hr class="my-6">
+        <div class="config-item pb-4 border-b border-gray-300">
+            <label for="globalPerformComparisonCheckbox" class="flex items-center text-sm text-gray-700">
+                <input type="checkbox" id="globalPerformComparisonCheckbox" name="performComparisonGlobal" value="true" checked
+                       class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 mr-2">
+                Perform API Comparison & Show Full Results
+            </label>
+            <p class="mt-1 text-xs text-gray-500">
+                If unchecked, "Process New File" will only parse. "Load Existing" will only load data.
+            </p>
+        </div>
 
-        {# Section 2: Load Existing Processed File #}
-        <div>
-            <h2 class="text-xl font-semibold mb-4 text-gray-800 border-b pb-2">2. Load Existing Processed File</h2>
-            <p class="text-sm text-gray-600 mb-3">Select a previously processed file from the 'uploads' directory to view its results.</p>
-            <div id="processedFilesList">
-                {# The 'processed_files' list is passed from the Flask route #}
-                {% if processed_files %}
-                    <ul class="list-none max-h-60 overflow-y-auto border rounded-md p-2 bg-gray-50">
+
+        {# Section 1: Process New Source File #}
+        <div class="upload-section">
+            <h2 class="text-xl font-semibold mb-4 text-gray-800">1. Process New Source File</h2>
+            <form id="processNewFileForm" method="post" enctype="multipart/form-data">
+                <div class="config-item">
+                    <label for="sourceExcelFile" class="block text-sm font-medium text-gray-700 mb-1">Select Original Source Excel File (.xlsx):</label>
+                    <input type="file" id="sourceExcelFile" name="sourceExcelFile" required accept=".xlsx"
+                           class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer border border-gray-300 rounded-md p-1">
+                </div>
+                {# Single button for processing new file #}
+                <button type="submit" id="processNewFileButton" disabled class="action-button w-full bg-green-600 hover:bg-green-700 disabled:opacity-50">
+                    Process File {# Text will be updated by JS #}
+                </button>
+                 <p id="processNewFileButtonHelpText" class="mt-2 text-xs text-gray-600"></p>
+            </form>
+        </div>
+
+        {# Section 2: Work with Existing Processed File #}
+        <div class="upload-section">
+            <h2 class="text-xl font-semibold mb-4 text-gray-800">2. Work with Existing Processed File</h2>
+            <p class="text-sm text-gray-600 mb-3">Select a `*_processed.xlsx` file. The global rule above will be used for comparison if "Perform API Comparison" is checked.</p>
+            <div class="config-item mb-3">
+                <label for="existingProcessedFileSelect" class="block text-sm font-medium text-gray-700 mb-1">Select Processed File:</label>
+                <select id="existingProcessedFileSelect" name="processedFilename"
+                        class="w-full border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                    <option value="">-- Select a processed file --</option>
+                    {% if processed_files %}
                         {% for filename in processed_files %}
-                            <li class="file-list-item text-sm">
-                                <span class="truncate" title="{{ filename }}">{{ filename }}</span>
-                                {# Button calls JS function to load this file's data #}
-                                <button onclick="loadProcessedFile('{{ filename }}')"
-                                        class="load-button bg-gray-500 hover:bg-gray-600 text-white font-medium py-1 px-3 rounded-md text-xs transition duration-150 ease-in-out flex-shrink-0">
-                                    Load
-                                </button>
-                            </li>
+                            <option value="{{ filename }}">{{ filename }}</option>
                         {% endfor %}
-                    </ul>
-                {% else %}
-                    <p class="text-sm text-gray-500 italic">No processed files found in the 'uploads' directory.</p>
-                {% endif %}
+                    {% else %}
+                        <option value="" disabled>No processed files found</option>
+                    {% endif %}
+                </select>
             </div>
-             {# Area to show status while loading an existing file #}
-             <div id="loadProcessedStatus" class="text-sm mt-2"></div>
+            {# Button text and action depend on the global checkbox #}
+            <button id="loadProcessedButton" onclick="loadAndProcessExistingFile()" disabled class="action-button w-full bg-teal-600 hover:bg-teal-700 disabled:opacity-50">
+                Load/Compare Selected File {# Text updated by JS #}
+            </button>
+            <p id="loadProcessedButtonHelpText" class="mt-2 text-xs text-gray-600"></p>
+            <div id="loadProcessedStatus" class="text-sm mt-2"></div>
         </div>
     </div>
 
@@ -173,251 +119,275 @@
     <div class="lg:col-span-2 bg-white p-6 shadow rounded-lg">
         <h2 class="text-xl font-semibold mb-4 text-gray-800">Application Configuration</h2>
         <p class="text-sm text-gray-600 mb-4">
-            Current settings loaded from <code>config.ini</code>. Modify values below and click "Save Configuration" to update the file.
-            <br><strong class="text-red-600">Note:</strong> Saving changes here updates <code>config.ini</code>. The application may need to be restarted for all changes (like logging level) to take full effect.
+            Current settings from <code>config.ini</code>. Changes require app restart for full effect.
         </p>
-        {# Form submits updated config to the backend processing.update_config route #}
         <form action="{{ url_for('processing.update_config') }}" method="post">
-            {# --- API Section --- #}
             <div class="config-section">
-                <h3 class="text-lg font-medium text-gray-700">API Settings</h3>
-                 {# dn_url and agent_group_url are removed as they are per Excel rule now #}
+                <h3 class="text-lg font-medium text-gray-700">Global API Settings</h3>
                  <div class="config-item">
                     <label for="config_api_timeout">Global API Timeout (seconds):</label>
                     <input type="number" id="config_api_timeout" name="timeout" value="{{ config.get('api_timeout', 15) }}" min="1">
-                    <p class="help">Default timeout for all API calls, including those specified in Excel rule templates.</p>
+                    <p class="help">Default timeout for all API calls.</p>
                  </div>
             </div>
-
-             {# --- Sheet Layout Section (Hints for excel_processing.py) --- #}
             <div class="config-section">
-                 <h3 class="text-lg font-medium text-gray-700">Sheet Layout Hints (for Excel Processing)</h3>
-                 <p class="text-xs text-gray-500 mb-2">These settings are primarily used by the underlying `excel_processing.py` if not overridden by specific Excel Rule Template logic. The rule templates offer more granular control.</p>
+                 <h3 class="text-lg font-medium text-gray-700">Sheet Layout Hints (for Built-in Parser)</h3>
+                 <p class="text-xs text-gray-500 mb-2">Used by the initial built-in parser when "Process New File" (Parse Only mode) is used, or if a rule doesn't specify.</p>
                  <div class="config-item">
                     <label for="config_ideal_agent_header">"Ideal Agent" Column Header Text:</label>
                     <input type="text" id="config_ideal_agent_header" name="ideal_agent_header_text" value="{{ config.get('ideal_agent_header_text', 'Ideal Agent') }}">
-                    <p class="help">Text to look for in Row 1 (typically Cols C/D) to find an "Ideal Agent" type column if an Excel rule uses it.</p>
                  </div>
                  <div class="config-item">
                     <label for="config_ideal_agent_fallback">"Ideal Agent" Fallback Cell:</label>
                     <input type="text" id="config_ideal_agent_fallback" name="ideal_agent_fallback_cell" value="{{ config.get('ideal_agent_fallback_cell', 'C2') }}">
-                     <p class="help">Cell coordinate (e.g., C2) to check if the header text is not found in the usual header row.</p>
                  </div>
                  <div class="config-item">
                     <label for="config_vag_sheet">Default VAG Extraction Sheet Name:</label>
                     <input type="text" id="config_vag_sheet" name="vag_extraction_sheet" value="{{ config.get('vag_extraction_sheet', 'Default Targeting- Group') }}">
-                     <p class="help">Default sheet name to look for VAGs if an Excel rule for VAGs doesn't specify sheets.</p>
                  </div>
             </div>
-
-            {# --- Logging Configuration Section --- #}
             <div class="config-section">
                 <h3 class="text-lg font-medium text-gray-700">Logging</h3>
                 <div class="config-item">
                     <label for="config_log_level">Application Log Level:</label>
-                    {# The 'config' dictionary passed to the template should contain 'log_level_str' #}
-                    <select id="config_log_level" name="log_level" class="w-full border border-gray-300 rounded-md p-1.5 text-sm focus:ring-indigo-500 focus:border-indigo-500">
+                    <select id="config_log_level" name="log_level" class="w-full border border-gray-300 rounded-md p-1.5 text-sm">
                         <option value="DEBUG" {% if config.get('log_level_str') == 'DEBUG' %}selected{% endif %}>DEBUG</option>
                         <option value="INFO" {% if config.get('log_level_str') == 'INFO' or not config.get('log_level_str') %}selected{% endif %}>INFO (Default)</option>
                         <option value="WARNING" {% if config.get('log_level_str') == 'WARNING' %}selected{% endif %}>WARNING</option>
                         <option value="ERROR" {% if config.get('log_level_str') == 'ERROR' %}selected{% endif %}>ERROR</option>
                         <option value="CRITICAL" {% if config.get('log_level_str') == 'CRITICAL' %}selected{% endif %}>CRITICAL</option>
                     </select>
-                    <p class="help">Set the application-wide logging level. DEBUG is most verbose. Changes require an application restart to take full effect.</p>
+                    <p class="help">Set the application-wide logging level. Restart may be needed.</p>
                 </div>
             </div>
-
-            {# Files Section (source_file removed) #}
-            {# This section is no longer needed for source_file #}
-            {# <div class="config-section">
-                <h3 class="text-lg font-medium text-gray-700">Files</h3>
-            </div> #}
-
-
             <div class="text-right mt-4">
-                <button type="submit"
-                        class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-md text-sm transition duration-150 ease-in-out">
+                <button type="submit" class="action-button bg-green-600 hover:bg-green-700">
                     Save Configuration to config.ini
                 </button>
             </div>
         </form>
     </div>
-
 </div>
 {% endblock %}
 
-
 {% block action_bar %}
-    {# No action bar needed on this specific page, override base block to be empty #}
+    {# No action bar needed on this specific page #}
 {% endblock %}
 
-
 {% block scripts %}
-    {# --- Page-Specific JavaScript --- #}
     <script>
         // DOM References
-        const uploadForm = document.getElementById('uploadForm');
-        const uploadButton = document.getElementById('uploadButton');
+        const processNewFileForm = document.getElementById('processNewFileForm');
         const sourceExcelFile = document.getElementById('sourceExcelFile');
-        const processingTriggerArea = document.getElementById('processingTriggerArea');
-        const uploadSuccessMessage = document.getElementById('uploadSuccessMessage');
-        const runComparisonButton = document.getElementById('runComparisonButton');
+        const processNewFileButton = document.getElementById('processNewFileButton');
+        const processNewFileButtonHelpText = document.getElementById('processNewFileButtonHelpText');
+
+        const existingProcessedFileSelect = document.getElementById('existingProcessedFileSelect');
+        const loadProcessedButton = document.getElementById('loadProcessedButton');
+        const loadProcessedButtonHelpText = document.getElementById('loadProcessedButtonHelpText');
         const loadProcessedStatus = document.getElementById('loadProcessedStatus');
-        const generalMessageArea = document.getElementById('uploadConfigMessageArea'); // Use specific message area for this page
-        const excelRuleSelect = document.getElementById('excelRuleSelect');
 
-        // --- Handle File Upload ---
-        if (uploadForm) {
-            uploadForm.addEventListener('submit', async (event) => {
-                event.preventDefault(); // Prevent default form submission
-                uploadButton.disabled = true;
-                uploadButton.textContent = 'Uploading...';
-                processingTriggerArea.style.display = 'none'; // Hide trigger area
-                generalMessageArea.innerHTML = ''; // Clear previous messages
+        const globalExcelRuleSelect = document.getElementById('globalExcelRuleSelect');
+        const globalPerformComparisonCheckbox = document.getElementById('globalPerformComparisonCheckbox');
+        const generalMessageArea = document.getElementById('uploadConfigMessageArea');
 
-                const formData = new FormData(uploadForm);
+        // --- Update Button States and Help Text based on selections ---
+        function updateProcessNewFileButtonState() {
+            if (!processNewFileButton || !sourceExcelFile || !globalExcelRuleSelect || !globalPerformComparisonCheckbox || !processNewFileButtonHelpText) return;
+
+            const isFileSelected = sourceExcelFile.files && sourceExcelFile.files.length > 0;
+            const performComparison = globalPerformComparisonCheckbox.checked;
+            const isRuleSelected = globalExcelRuleSelect.value !== "";
+
+            if (performComparison) { // Parse & Compare mode
+                processNewFileButton.disabled = !(isFileSelected && isRuleSelected);
+                processNewFileButton.textContent = 'Parse, Compare & View Results';
+                processNewFileButtonHelpText.textContent = 'Uploads, parses with selected rule, compares with APIs (defined in rule), generates processed file, and loads results for viewing.';
+                // Show rule selector if not already visible (it's always visible now)
+                // document.getElementById('excelRuleSelectForNewFileContainer').style.display = 'block';
+            } else { // Parse File Only mode
+                processNewFileButton.disabled = !isFileSelected; // Only depends on file selection
+                processNewFileButton.textContent = 'Parse File Only (using Built-in Parser)';
+                processNewFileButtonHelpText.textContent = 'Uploads file, parses with built-in logic, and generates a `*_processed.xlsx` file. Rule selection is ignored for parsing itself but may be used if you later load this file for comparison.';
+                // document.getElementById('excelRuleSelectForNewFileContainer').style.display = 'none'; // Hide rule selector
+            }
+        }
+
+        function updateLoadProcessedButtonState() {
+            if (!loadProcessedButton || !existingProcessedFileSelect || !globalExcelRuleSelect || !globalPerformComparisonCheckbox || !loadProcessedButtonHelpText) return;
+
+            const isFileSelected = existingProcessedFileSelect.value !== "";
+            const isRuleSelected = globalExcelRuleSelect.value !== "";
+            const performComparison = globalPerformComparisonCheckbox.checked;
+
+            if (performComparison) {
+                loadProcessedButton.disabled = !(isFileSelected && isRuleSelected);
+                loadProcessedButton.textContent = 'Load & Compare Selected File';
+                loadProcessedButtonHelpText.textContent = 'Loads selected processed file, runs API comparisons per selected rule, and shows results.';
+            } else {
+                loadProcessedButton.disabled = !isFileSelected; // Rule not needed if only loading
+                loadProcessedButton.textContent = 'Load Selected File Data';
+                loadProcessedButtonHelpText.textContent = 'Only loads data from the selected processed Excel file for viewing (no API comparison). Rule selection is ignored for this action.';
+            }
+        }
+
+        // --- Event Listeners ---
+        if(sourceExcelFile) sourceExcelFile.addEventListener('change', updateProcessNewFileButtonState);
+        if(globalExcelRuleSelect) globalExcelRuleSelect.addEventListener('change', () => {
+            updateProcessNewFileButtonState();
+            updateLoadProcessedButtonState();
+        });
+        if(globalPerformComparisonCheckbox) globalPerformComparisonCheckbox.addEventListener('change', () => {
+            updateProcessNewFileButtonState();
+            updateLoadProcessedButtonState();
+        });
+        if(existingProcessedFileSelect) existingProcessedFileSelect.addEventListener('change', updateLoadProcessedButtonState);
+
+
+        // --- Handle New File Processing (Upload + Parse + Optionally Compare) ---
+        if (processNewFileForm) {
+            processNewFileForm.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                const selectedRuleTemplate = globalExcelRuleSelect.value;
+                const performComparison = globalPerformComparisonCheckbox.checked;
+
+                if (!sourceExcelFile.files || sourceExcelFile.files.length === 0) {
+                    alert("Please select an Excel file to process."); return;
+                }
+                if (performComparison && !selectedRuleTemplate) { // Rule needed only if comparing
+                    alert("Please select an Excel Processing & Comparison Rule template."); return;
+                }
+
+                processNewFileButton.disabled = true;
+                processNewFileButton.textContent = performComparison ? 'Processing & Comparing...' : 'Parsing File...';
+                generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">${performComparison ? 'Uploading, parsing, running API comparisons...' : 'Uploading and parsing file...'} This may take some time.</div>`;
+
+                const formData = new FormData(); // Create FormData to send file and other data
+                formData.append('sourceExcelFile', sourceExcelFile.files[0]);
+                // Only send excelRuleTemplateName if comparison is being performed,
+                // otherwise backend uses built-in parser.
+                if (performComparison) {
+                    formData.append('excelRuleTemplateName', selectedRuleTemplate);
+                }
+                formData.append('perform_comparison', performComparison.toString());
 
                 try {
-                    const response = await fetch('{{ url_for("processing.upload_original_file") }}', {
+                    // Endpoint now handles both file upload and processing logic
+                    const response = await fetch('{{ url_for("processing.run_comparison") }}', {
                         method: 'POST',
-                        body: formData,
+                        body: formData, // Send as FormData, not JSON, because of file
                     });
                     const result = await response.json();
 
                     if (response.ok) {
-                        uploadSuccessMessage.textContent = result.message || `File '${result.original_filename}' uploaded. Select a rule to process.`;
-                        await loadExcelRuleTemplatesForDropdown(); // Load rules after successful upload
-                        processingTriggerArea.style.display = 'block'; // Show button and dropdown
-                        runComparisonButton.disabled = excelRuleSelect.value === ""; // Disable button if no rule selected
-                        // Clear the file input after successful upload
-                        sourceExcelFile.value = '';
+                        generalMessageArea.innerHTML = `<div class="bg-green-100 border border-green-300 text-green-700 px-4 py-3 rounded relative" role="alert">${result.message || 'Operation complete.'} ${performComparison && result.redirect_url ? 'Redirecting...' : ''}</div>`;
+                        if (performComparison && result.redirect_url) {
+                            window.location.href = result.redirect_url;
+                        } else { // "Parse Only" was successful or comparison didn't yield redirect
+                            sourceExcelFile.value = ''; // Clear file input
+                            alert(result.message + (result.processed_file ? `\nGenerated: ${result.processed_file}` : ''));
+                            window.location.reload(); // Reload to update list of processed files
+                        }
                     } else {
-                        throw new Error(result.error || `Upload failed with status ${response.status}`);
+                         throw new Error(result.error || `Processing failed with status ${response.status}`);
                     }
                 } catch (error) {
-                    console.error('Upload error:', error);
-                    // Display error in the general message area
-                    generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"><strong class="font-bold">Upload Error:</strong> ${error.message}</div>`;
+                     console.error('New file processing error:', error);
+                     generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"><strong class="font-bold">Processing Error:</strong> ${error.message}. Check server logs.</div>`;
                 } finally {
-                    uploadButton.disabled = false;
-                    uploadButton.textContent = 'Upload File';
+                    updateProcessNewFileButtonState();
                 }
             });
         }
 
-        // --- Load Excel Rule Templates for Dropdown ---
-        async function loadExcelRuleTemplatesForDropdown() {
-            excelRuleSelect.innerHTML = '<option value="">Loading rules...</option>';
-            excelRuleSelect.disabled = true;
-            runComparisonButton.disabled = true; // Keep disabled while loading/if empty
+        // --- Load Excel Rule Templates for the Global Dropdown ---
+        async function loadGlobalExcelRuleTemplates() {
+            if (!globalExcelRuleSelect) return;
+            globalExcelRuleSelect.innerHTML = '<option value="">Loading rules...</option>';
+            globalExcelRuleSelect.disabled = true;
+            updateProcessNewFileButtonState(); // Ensure buttons are initially correctly disabled
+            updateLoadProcessedButtonState();
             try {
-                // Fetch list from the excel_rules blueprint endpoint
                 const response = await fetch('{{ url_for("excel_rules.list_excel_rule_templates") }}');
-                if (!response.ok) {
-                    throw new Error('Failed to fetch Excel rule templates');
-                }
+                if (!response.ok) throw new Error('Failed to fetch Excel rule templates');
                 const templates = await response.json();
-
-                excelRuleSelect.innerHTML = '<option value="">-- Select Processing Rule --</option>'; // Default option
+                globalExcelRuleSelect.innerHTML = '<option value="">-- Select Processing & Comparison Rule --</option>';
                 if (templates.length > 0) {
                     templates.forEach(filename => {
                         const option = document.createElement('option');
-                        option.value = filename; // Use full filename as value
-                        option.textContent = filename.replace('.json', ''); // Display name without extension
-                        excelRuleSelect.appendChild(option);
+                        option.value = filename; option.textContent = filename.replace('.json', '');
+                        globalExcelRuleSelect.appendChild(option);
                     });
-                    excelRuleSelect.disabled = false; // Enable dropdown
+                    globalExcelRuleSelect.disabled = false;
                 } else {
-                    excelRuleSelect.innerHTML = '<option value="">No rule templates found</option>';
-                    // Keep disabled
+                    globalExcelRuleSelect.innerHTML = '<option value="">No rule templates found. Create one first.</option>';
                 }
             } catch (error) {
                 console.error('Error loading Excel rule templates for dropdown:', error);
-                excelRuleSelect.innerHTML = '<option value="">Error loading rules</option>';
-                // Keep disabled
+                globalExcelRuleSelect.innerHTML = '<option value="">Error loading rules</option>';
             }
-        }
-
-        // Enable/disable Run button based on rule selection
-        if(excelRuleSelect){ // Check if element exists before adding listener
-            excelRuleSelect.addEventListener('change', () => {
-                runComparisonButton.disabled = excelRuleSelect.value === "";
-            });
+            updateProcessNewFileButtonState(); // Re-evaluate button states
+            updateLoadProcessedButtonState();
         }
 
 
-        // --- Trigger Comparison Run ---
-        async function runComparison() {
-            const selectedRuleTemplate = excelRuleSelect.value;
-            if (!selectedRuleTemplate) {
-                alert("Please select an Excel Processing Rule template first.");
+        // --- Load Existing Processed File & Optionally Compare ---
+        async function loadAndProcessExistingFile() {
+            const selectedProcessedFile = existingProcessedFileSelect.value;
+            const selectedRuleTemplate = globalExcelRuleSelect.value; // Use the global rule selector
+            const performComparison = globalPerformComparisonCheckbox.checked;
+
+            if (!selectedProcessedFile) { alert("Please select a processed file."); return; }
+            if (performComparison && !selectedRuleTemplate) { // Rule needed only if comparing
+                alert("Please select an Excel Processing & Comparison Rule template for comparison.");
                 return;
             }
 
-            runComparisonButton.disabled = true;
-            runComparisonButton.textContent = 'Processing... Please Wait...';
-            generalMessageArea.innerHTML = `<div class="bg-blue-100 border border-blue-300 text-blue-700 px-4 py-3 rounded relative animate-pulse" role="alert">Running comparison and generating processed file... This may take a moment.</div>`;
-
-            try {
-                const response = await fetch('{{ url_for("processing.run_comparison") }}', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ excelRuleTemplateName: selectedRuleTemplate }) // Send selected rule name
-                });
-                const result = await response.json();
-
-                if (response.ok) {
-                    generalMessageArea.innerHTML = `<div class="bg-green-100 border border-green-300 text-green-700 px-4 py-3 rounded relative" role="alert">${result.message || 'Processing complete.'} Redirecting...</div>`;
-                    // Redirect to the results viewer page provided by backend
-                    window.location.href = result.redirect_url || '{{ url_for("ui.upload_config_page") }}'; // Fallback redirect
-                } else {
-                     throw new Error(result.error || `Processing failed with status ${response.status}`);
-                }
-
-            } catch (error) {
-                 console.error('Comparison run error:', error);
-                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"><strong class="font-bold">Processing Error:</strong> ${error.message}. Check server logs.</div>`;
-                 runComparisonButton.disabled = false; // Re-enable button on error
-                 runComparisonButton.textContent = 'Run Comparison & View Results';
-            }
-        }
-
-        // --- Load Existing Processed File ---
-        async function loadProcessedFile(filename) {
-            loadProcessedStatus.innerHTML = `<p class="text-blue-700 animate-pulse">Loading data from ${filename}...</p>`;
-            generalMessageArea.innerHTML = ''; // Clear other messages
+            loadProcessedButton.disabled = true;
+            loadProcessedButton.textContent = performComparison ? 'Loading & Comparing...' : 'Loading Data...';
+            loadProcessedStatus.innerHTML = `<p class="text-blue-700 animate-pulse"> ${performComparison ? 'Loading data and running comparisons...' : 'Loading data from ' + selectedProcessedFile + '...'} </p>`;
+            generalMessageArea.innerHTML = '';
 
             try {
                  const response = await fetch('{{ url_for("processing.load_processed_file") }}', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ filename: filename }) // Send filename to load
+                    body: JSON.stringify({
+                        filename: selectedProcessedFile,
+                        excelRuleTemplateName: selectedRuleTemplate, // Rule for comparison structure
+                        perform_comparison: performComparison // Send flag
+                    })
                 });
                 const result = await response.json();
 
                 if (response.ok) {
-                    loadProcessedStatus.innerHTML = `<p class="text-green-700">${result.message || 'Data loaded.'} Redirecting...</p>`;
-                    // Redirect to the results viewer page provided by backend
-                    window.location.href = result.redirect_url || '{{ url_for("ui.upload_config_page") }}'; // Fallback redirect
+                    loadProcessedStatus.innerHTML = `<p class="text-green-700">${result.message || 'Operation complete.'} ${result.redirect_url ? 'Redirecting...' : ''}</p>`;
+                    if (result.redirect_url) { // If comparison was done and successful
+                        window.location.href = result.redirect_url;
+                    } else { // "Load Only" from processed file was successful
+                         alert(result.message);
+                         // Redirect to viewer, which will show only the loaded data without API comparison
+                         // Or, if no redirect_url_for_view_only, stay on page or reload
+                         window.location.href = result.redirect_url_for_view_only || '{{ url_for("ui.upload_config_page") }}';
+                    }
                 } else {
-                     throw new Error(result.error || `Loading failed with status ${response.status}`);
+                     throw new Error(result.error || `Operation failed with status ${response.status}`);
                 }
-
             } catch (error) {
-                 console.error('Error loading processed file:', error);
-                 loadProcessedStatus.innerHTML = ''; // Clear loading message
-                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"><strong class="font-bold">Load Error:</strong> ${error.message}. Check server logs.</div>`;
+                 console.error('Error loading/comparing processed file:', error);
+                 loadProcessedStatus.innerHTML = '';
+                 generalMessageArea.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert"><strong class="font-bold">Operation Error:</strong> ${error.message}. Check server logs.</div>`;
+            } finally {
+                updateLoadProcessedButtonState();
             }
         }
 
-        // Initial load for excel rule template dropdown if the processing trigger area is visible
-        // (e.g., after a page reload where a file was previously uploaded but not processed)
-        // This is now handled after successful upload.
-        // document.addEventListener('DOMContentLoaded', () => {
-        //     if (processingTriggerArea && processingTriggerArea.style.display === 'block') {
-        //         loadExcelRuleTemplatesForDropdown();
-        //     }
-        // });
+        // Initial load for the global Excel rule template dropdown
+        document.addEventListener('DOMContentLoaded', () => {
+            loadGlobalExcelRuleTemplates();
+            updateProcessNewFileButtonState();
+            updateLoadProcessedButtonState();
+        });
 
     </script>
 {% endblock %}
