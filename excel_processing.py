@@ -3,7 +3,7 @@
 Standalone Built-in Parser for processing an original source Excel file.
 
 This module takes an original Excel workbook, identifies common routing entities
-(VQs, Skills, VAGs, Skill Expressions) based on predefined logic and hints,
+(VQs, Skills, VAGs, Skill Expressions) based on predefined internal constants,
 discards any struck-through items, performs cleaning, and outputs a new
 workbook object with standardized sheets for each entity type.
 
@@ -26,10 +26,11 @@ logger = logging.getLogger(__name__)
 if not logger.hasHandlers(): # Avoid adding handlers if already configured by Flask
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(module)s:%(funcName)s] - %(message)s')
 
-# --- Default Configuration Hints for the Built-in Parser ---
+# --- Default Configuration Constants for the Built-in Parser ---
 # Users can modify these directly if their source Excel has different conventions.
 DEFAULT_IDEAL_AGENT_HEADER_TEXT = "Ideal Agent"
-DEFAULT_IDEAL_AGENT_FALLBACK_CELL = "C2" # e.g., if header is not in row 1 of C or D
+# List of cell addresses to check for the Ideal Agent header text, in order of preference.
+DEFAULT_IDEAL_AGENT_CELL_ADDRESSES = ["C1", "D1", "C2"]
 DEFAULT_VAG_EXTRACTION_SHEET_NAME = "Default Targeting- Group"
 # Sheets to always skip when this parser processes an original Excel file
 DEFAULT_SHEETS_TO_SKIP_PARSING = {
@@ -55,67 +56,75 @@ def _extract_skills_from_expression(expression: str) -> list[str]:
 
 def _identify_ideal_agent_column(
     sheet: openpyxl.worksheet.worksheet.Worksheet,
-    ideal_agent_header_text: str, # Expects header text string
-    ideal_agent_fallback_cell: str # Expects fallback cell string
+    ideal_agent_header_text: str,
+    ideal_agent_cell_addresses: List[str] # Now expects a list of cell addresses
 ) -> Optional[int]:
     """
-    Identifies the column index for the 'Ideal Agent' column based on hints.
-    Searches header row 1 (specifically Columns C & D) first, then checks a fallback cell.
-    Internal to this module.
+    Identifies the column index for the 'Ideal Agent' column.
+    Iterates through the provided list of cell addresses to find the
+    specified header text. The column of the first matching cell is returned.
+
+    Args:
+        sheet: The openpyxl worksheet object.
+        ideal_agent_header_text: The header text to search for.
+        ideal_agent_cell_addresses: A list of cell coordinates (e.g., "C1", "D2")
+                                     to check in order.
+
+    Returns:
+        The 1-based column index if the header is found in one of the specified cells,
+        otherwise None.
     """
-    logger.debug(f"Identifying '{ideal_agent_header_text}' column in sheet: {sheet.title}")
-    # Check common header locations first (e.g., Columns C and D in row 1)
-    for col_idx in [3, 4]:  # Column C=3, Column D=4
-        if col_idx <= sheet.max_column:
-            cell_value = sheet.cell(row=1, column=col_idx).value
-            if cell_value and ideal_agent_header_text in str(cell_value):
-                logger.debug(f"Found '{ideal_agent_header_text}' in header row 1 at column {col_idx}")
-                return col_idx
-    # Check fallback cell if not found
-    try:
-        col_str, row_str = openpyxl_cell_utils.coordinate_to_tuple(ideal_agent_fallback_cell)
-        fallback_col_idx = openpyxl_cell_utils.column_index_from_string(col_str)
-        fallback_row_idx = int(row_str)
-        if fallback_row_idx <= sheet.max_row and fallback_col_idx <= sheet.max_column:
-            cell_value_fallback = sheet.cell(row=fallback_row_idx, column=fallback_col_idx).value
-            if cell_value_fallback and ideal_agent_header_text in str(cell_value_fallback):
-                logger.debug(f"Found '{ideal_agent_header_text}' at fallback cell {ideal_agent_fallback_cell} (Col {fallback_col_idx})")
-                return fallback_col_idx
-    except Exception as e:
-         logger.warning(f"Could not parse or check fallback cell '{ideal_agent_fallback_cell}': {e}")
-    logger.debug(f"'{ideal_agent_header_text}' column not found in sheet: {sheet.title} using configured hints.")
+    logger.debug(f"Identifying '{ideal_agent_header_text}' column in sheet: {sheet.title} by checking cell addresses: {ideal_agent_cell_addresses}")
+
+    # --- MODIFICATION START: Iterate through cell addresses and parse directly ---
+    for cell_address in ideal_agent_cell_addresses:
+        try:
+            # Parse the cell address to get column string and row number
+            col_str, row_idx_from_address = openpyxl_cell_utils.coordinate_to_tuple(cell_address)
+            # Convert column string (e.g., "C") to column index (e.g., 3)
+            col_idx_to_check = openpyxl_cell_utils.column_index_from_string(col_str)
+
+            # Check if the parsed cell address is within the sheet's bounds
+            if row_idx_from_address <= sheet.max_row and col_idx_to_check <= sheet.max_column:
+                cell_value = sheet.cell(row=row_idx_from_address, column=col_idx_to_check).value
+                if cell_value and ideal_agent_header_text in str(cell_value):
+                    logger.debug(f"Found '{ideal_agent_header_text}' at cell '{cell_address}' (Column {col_idx_to_check}). Using this column for 'Ideal Agent' data.")
+                    return col_idx_to_check # Return the column index where the header was found
+            else:
+                logger.debug(f"Cell address '{cell_address}' is out of bounds for sheet '{sheet.title}'.")
+        except openpyxl_cell_utils.IllegalCharacterError:
+            logger.warning(f"Invalid cell address format in ideal_agent_cell_addresses: '{cell_address}'. Skipping this address.")
+        except Exception as e:
+             logger.warning(f"Could not parse or check ideal agent location '{cell_address}': {e}")
+    # --- MODIFICATION END ---
+
+    logger.debug(f"'{ideal_agent_header_text}' column not found in sheet: {sheet.title} using configured cell addresses.")
     return None
 
 
 # --- Main Parser Function ---
 def parse_source_excel_to_standardized_workbook(
-    source_workbook: openpyxl.workbook.Workbook,
-    config_hints: Optional[Dict[str, Any]] = None
+    source_workbook: openpyxl.workbook.Workbook
 ) -> openpyxl.workbook.Workbook:
     """
-    Parses the original source Excel workbook to extract entities based on built-in logic.
+    Parses the original source Excel workbook to extract entities based on built-in logic
+    defined by internal constants.
     It discards struck-through items, cleans data, and creates a new
     workbook object with standardized output sheets for each entity type.
-    This new workbook is intended to be the "_processed.xlsx" file.
 
     Args:
         source_workbook: The openpyxl.Workbook object of the original uploaded Excel.
                          Expected to be loaded with style information to detect strikethrough.
-        config_hints: An optional dictionary containing hints from the application's
-                      config.ini (e.g., 'ideal_agent_header_text'). Uses internal
-                      defaults if not provided.
-
     Returns:
         A new openpyxl.Workbook object containing the parsed and standardized entity sheets.
     """
     logger.info("Starting built-in parsing of source workbook to create standardized entity sheets...")
 
-    # Use provided config hints or defaults
-    cfg = config_hints if config_hints is not None else {}
-    ideal_agent_header = cfg.get('ideal_agent_header_text', DEFAULT_IDEAL_AGENT_HEADER_TEXT)
-    ideal_agent_fallback = cfg.get('ideal_agent_fallback_cell', DEFAULT_IDEAL_AGENT_FALLBACK_CELL)
-    vag_sheet_name_hint = cfg.get('vag_extraction_sheet', DEFAULT_VAG_EXTRACTION_SHEET_NAME)
-    sheets_to_skip = DEFAULT_SHEETS_TO_SKIP_PARSING.copy() # Use a copy
+    # Use internal constants directly
+    ideal_agent_header = DEFAULT_IDEAL_AGENT_HEADER_TEXT
+    ideal_agent_cell_addrs = DEFAULT_IDEAL_AGENT_CELL_ADDRESSES # Use the list
+    vag_sheet_name_hint = DEFAULT_VAG_EXTRACTION_SHEET_NAME
+    sheets_to_skip = DEFAULT_SHEETS_TO_SKIP_PARSING.copy()
 
     # Intermediate storage for unique, non-struck entities
     parsed_data = {
@@ -132,41 +141,36 @@ def parse_source_excel_to_standardized_workbook(
             continue
 
         logger.info(f"Built-in parser processing sheet: {sheet.title}")
-        # --- MODIFICATION START: Pass individual config hints ---
         ideal_agent_col_idx = _identify_ideal_agent_column(
             sheet,
             ideal_agent_header,
-            ideal_agent_fallback
+            ideal_agent_cell_addrs # Pass the list of addresses
         )
-        # --- MODIFICATION END ---
 
         for row_idx in range(1, sheet.max_row + 1):
             for col_idx in range(1, sheet.max_column + 1):
                 cell = sheet.cell(row=row_idx, column=col_idx)
-                if cell.value is None: # Skip truly empty cells
+                if cell.value is None:
                     continue
                 
-                value_str_raw = str(cell.value) # Get raw value before stripping for logging
+                value_str_raw = str(cell.value)
                 value_str_stripped = value_str_raw.strip()
 
-                if not value_str_stripped: # Skip cells that are empty after stripping
+                if not value_str_stripped:
                     continue
 
-                # --- Check for strikethrough: if struck, discard this item ---
                 if cell.font and cell.font.strike:
                     logger.debug(f"Skipping struck-through cell {cell.coordinate}: '{value_str_raw}'")
-                    continue # Skip this cell's value entirely
+                    continue
 
-                # Identify VQs (starts with "VQ_", not a skill expression)
                 if (value_str_stripped.lower().startswith("vq_") or "vq" in value_str_stripped.lower()) and ">" not in value_str_stripped:
                     cleaned_vq = value_str_stripped.replace(" ", "").replace('\u00A0', '')
-                    if cleaned_vq: # Ensure not empty after cleaning
+                    if cleaned_vq:
                         parsed_data["VQs"].add(cleaned_vq)
                         logger.debug(f"Parser found VQ: {cleaned_vq} from {cell.coordinate}")
 
-                # Identify Skill Expressions (contains ">")
                 elif ">" in value_str_stripped:
-                    raw_expression = value_str_stripped # Already stripped
+                    raw_expression = value_str_stripped
                     ideal_expression_str = ""
                     if ideal_agent_col_idx and ideal_agent_col_idx <= sheet.max_column:
                         ideal_cell = sheet.cell(row=row_idx, column=ideal_agent_col_idx)
@@ -196,7 +200,6 @@ def parse_source_excel_to_standardized_workbook(
                         })
                         logger.debug(f"Parser found Skill Expression: {concatenated_key} from {cell.coordinate}")
 
-                # Identify VAGs (starts with "VAG_", specific sheet only as per hint)
                 elif value_str_stripped.startswith("VAG_") and sheet.title == vag_sheet_name_hint:
                     cleaned_vag = value_str_stripped.replace(" ", "").replace('\u00A0', '')
                     if cleaned_vag:
@@ -205,7 +208,6 @@ def parse_source_excel_to_standardized_workbook(
                 
     logger.info("Built-in parser finished initial data extraction from source workbook.")
 
-    # --- Create a new workbook for the processed output ---
     output_workbook = openpyxl.Workbook()
     if "Sheet" in output_workbook.sheetnames and len(output_workbook.sheetnames) == 1:
         try: output_workbook.remove(output_workbook.active)
@@ -223,12 +225,12 @@ def parse_source_excel_to_standardized_workbook(
         for i, skill_name in enumerate(sorted(list(parsed_data["Skills"])), start=2): skill_sheet.cell(row=i, column=1, value=skill_name)
         logger.info(f"Created 'Skills' output sheet with {len(parsed_data['Skills'])} items.")
     if parsed_data["VAGs"]:
-        vag_sheet = output_workbook.create_sheet("VAGs")
+        vag_sheet = output_workbook.create_sheet("VAGs_Output")
         vag_sheet.cell(row=1, column=1, value="VAG Name").font = bold_font
         for i, vag_name in enumerate(sorted(list(parsed_data["VAGs"])), start=2): vag_sheet.cell(row=i, column=1, value=vag_name)
         logger.info(f"Created 'VAGs' sheet with {len(parsed_data['VAGs'])} items.")
     if parsed_data["Skill_Expressions"]:
-        se_sheet = output_workbook.create_sheet("Skill_Expressions")
+        se_sheet = output_workbook.create_sheet("Skill_Expressions_Output")
         se_headers = ["Original Expression", "Ideal Expression", "Concatenated Key", "Extracted_Skills_List_String"]
         for col_idx, header in enumerate(se_headers, start=1): se_sheet.cell(row=1, column=col_idx, value=header).font = bold_font
         sorted_skill_expressions = sorted(parsed_data["Skill_Expressions"], key=lambda x: x.get("Concatenated Key", ""))
@@ -237,7 +239,7 @@ def parse_source_excel_to_standardized_workbook(
             se_sheet.cell(row=row_idx, column=2, value=se_data.get("Ideal Expression"))
             se_sheet.cell(row=row_idx, column=3, value=se_data.get("Concatenated Key"))
             se_sheet.cell(row=row_idx, column=4, value=se_data.get("Extracted_Skills_List_String"))
-        logger.info(f"Created 'Skill_Expressions_Output' sheet with {len(parsed_data['Skill_Expressions'])} items.")
+        logger.info(f"Created 'Skill_Expressions' sheet with {len(parsed_data['Skill_Expressions'])} items.")
 
     logger.info("Built-in parser finished creating standardized output workbook object.")
     return output_workbook
@@ -251,19 +253,16 @@ if __name__ == '__main__': # pragma: no cover
     wb = openpyxl.Workbook()
     sheet1 = wb.active; sheet1.title = "Sheet1_VQs_Skills"
     sheet1['A1'] = "VQ_SALES_EN"; sheet1['A2'] = "VQ_SUPPORT_ES"; sheet1['A2'].font = Font(strike=True)
-    sheet1['B1'] = "SkillA>5 & SkillB>3"; sheet1['C1'] = "IdealA>0"
-    sheet1['B2'] = "SkillC>2"; sheet1['A3'] = "VQ_Billing"; sheet_1['A4'] = "  VQ_ espa\u00A0ce  "
+    sheet1['B1'] = "SkillA>5 & SkillB>3"; sheet1['C1'] = "Ideal Agent Text Here" # Put header text in C1
+    sheet1['B2'] = "SkillC>2"; sheet1['A3'] = "VQ_Billing"; sheet1['A4'] = "  VQ_ espa\u00A0ce  "
     sheet2 = wb.create_sheet("Default Targeting- Group")
     sheet2['A1'] = "VAG_Tier1_Support"; sheet2['A2'] = "VAG_Sales_VIP"; sheet2['A2'].font = Font(strike=True)
     wb.save(test_wb_path)
     logger.info(f"Created dummy test workbook: {test_wb_path}")
-    loaded_test_wb = openpyxl.load_workbook(test_wb_path, data_only=False, read_only=False)
-    test_config_hints = {
-        'ideal_agent_header_text': 'Ideal Agent',
-        'ideal_agent_fallback_cell': 'C1',
-        'vag_extraction_sheet': 'Default Targeting- Group'
-    }
-    processed_wb = parse_source_excel_to_standardized_workbook(loaded_test_wb, test_config_hints)
+    loaded_test_wb = openpyxl.load_workbook(test_wb_path, data_only=False, read_only=False) # Need styles for strike
+    
+    # Test with the new parse_source_excel_to_standardized_workbook which uses internal constants
+    processed_wb = parse_source_excel_to_standardized_workbook(loaded_test_wb) # No config_hints needed
     loaded_test_wb.close()
     processed_output_path = "test_source_excel_PARSED.xlsx"
     processed_wb.save(processed_output_path)
